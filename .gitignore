@@ -1,0 +1,9 @@
+node_modules/
+dist/
+*.js.map
+.env
+.vector-cache/
+FoodData_Central_*/
+*.zip
+postman/environment.json
+postman/report.html

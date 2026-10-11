@@ -60,13 +60,34 @@ describe("UsdaFoodDataService", () => {
       fat: 0.33,
       carbs: 22.84,
       potassium: 358,
-      fiber: null,
+      fiber: 0,
+      sodium: 0,
+      sugars: null,
       servingSize: 100,
       servingUnit: "g",
       servingsPerContainer: 1,
       isVerified: true,
       userId: null,
     });
+  });
+
+  it("stores 0, not null, for nutrients the food table requires", async () => {
+    const repo = makeRepo();
+    const service = new UsdaFoodDataService(repo as never, config("k") as never);
+    respond([{ ...banana, foodNutrients: [{ nutrientId: 1008, value: 30 }] }]);
+    const [food] = await service.searchAndSync("sprouts", 5);
+    expect(food).toMatchObject({ protein: 0, carbs: 0, fat: 0, fiber: 0, sodium: 0, calcium: null });
+  });
+
+  it("skips a hit that fails to save and keeps the rest", async () => {
+    const repo = makeRepo();
+    const realSave = repo.save.getMockImplementation()!;
+    repo.save.mockImplementationOnce(() => Promise.reject(new Error("constraint")));
+    repo.save.mockImplementation(realSave);
+    const service = new UsdaFoodDataService(repo as never, config("k") as never);
+    respond([{ ...banana, fdcId: 1 }, { ...banana, fdcId: 2 }]);
+    const foods = await service.searchAndSync("banana", 5);
+    expect(foods.map((f) => f.fdcId)).toEqual([2]);
   });
 
   it("reuses the stored row for a food it has seen before", async () => {

@@ -41,6 +41,9 @@ const NUTRIENTS: Record<NutrientField, number[]> = {
   folateDfe: [1190],
 };
 
+// Columns that are NOT NULL (default 0) in the Food table.
+const REQUIRED: NutrientField[] = ["calories", "protein", "carbs", "fat", "fiber", "sodium"];
+
 type UsdaFood = {
   fdcId: number;
   description: string;
@@ -70,8 +73,12 @@ export class UsdaFoodDataService {
     const hits = await this.search(query, limit);
     const foods: FoodNutritionEntity[] = [];
     for (const hit of hits) {
-      const food = await this.upsert(hit);
-      if (food) foods.push(food);
+      try {
+        const food = await this.upsert(hit);
+        if (food) foods.push(food);
+      } catch (error) {
+        this.logger.warn(`Skipped USDA food ${hit.fdcId}: ${(error as Error).message}`);
+      }
     }
     return foods;
   }
@@ -122,6 +129,7 @@ export class UsdaFoodDataService {
       Object.entries(NUTRIENTS).map(([field, ids]) => [field, pick(ids)]),
     ) as Record<NutrientField, number | null>;
     if (nutrients.calories == null) return null;
+    for (const field of REQUIRED) nutrients[field] ??= 0;
 
     return this.foodRepo.save(
       this.foodRepo.create({

@@ -2,6 +2,7 @@ import { Module } from "@nestjs/common";
 import { FoodController } from "./food.controller";
 import { OllamaModule } from "../ollama/ollama.module";
 import { FoodService } from "./food.service";
+import { UsdaFoodDataService } from "./usda-food-data.service";
 import { NutritionModule } from "../nutrition/nutrition.module";
 import { MealsController } from "./meals.controller";
 import { MealsService } from "./meals.service";
@@ -19,7 +20,7 @@ import { AppUserEntity } from "../auth/entities/app-user.entity";
     TypeOrmModule.forFeature([FoodNutritionEntity, MealEntity, MealFoodEntity, AppUserEntity]),
   ],
   controllers: [FoodController, MealsController],
-  providers: [FoodService, MealsService],
+  providers: [FoodService, MealsService, UsdaFoodDataService],
   exports: [FoodService, MealsService],
 })
 export class MealPlanningModule {}

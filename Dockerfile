@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS deps
+FROM node:22-bookworm-slim AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -8,7 +8,7 @@ COPY tsconfig*.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:20-bookworm-slim AS runner
+FROM node:22-bookworm-slim AS runner
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apt-get update \
@@ -17,7 +17,7 @@ RUN apt-get update \
 COPY package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=build /app/dist ./dist
-COPY docker-init ./docker-init
-COPY scripts ./scripts
+RUN mkdir -p .vector-cache && chown node:node .vector-cache
 EXPOSE 3001
+USER node
 CMD ["node", "dist/main.js"]

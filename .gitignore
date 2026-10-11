@@ -7,3 +7,4 @@ FoodData_Central_*/
 *.zip
 postman/environment.json
 postman/report.html
+*.tsbuildinfo

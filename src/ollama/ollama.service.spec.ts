@@ -2,6 +2,7 @@ import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { createDecipheriv, pbkdf2Sync } from "crypto";
 import { OllamaService } from "./ollama.service";
+import { DEFAULT_GEMINI_MODEL } from "./gemini-model.util";
 
 jest.mock("axios");
 
@@ -90,7 +91,7 @@ describe("OllamaService platform provider", () => {
     const requestBody = mockedAxios.post.mock.calls[0][1] as { data: string };
     const curlCommand = decryptPlatformData(requestBody.data, "test-secret");
 
-    expect(curlCommand).toContain("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent");
+    expect(curlCommand).toContain(`https://generativelanguage.googleapis.com/v1beta/models/${DEFAULT_GEMINI_MODEL}:generateContent`);
     expect(curlCommand).toContain('-H "Content-Type: application/json"');
     expect(curlCommand).toContain('-H "x-goog-api-key: $GEMINI_API_KEY"');
     expect(curlCommand).not.toContain("AIza-local-test-key");
@@ -141,7 +142,7 @@ describe("OllamaService platform provider", () => {
     const requestBody = mockedAxios.post.mock.calls[0][1] as { data: string };
     const curlCommand = decryptPlatformData(requestBody.data, "test-secret");
 
-    expect(curlCommand).toContain("https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent");
+    expect(curlCommand).toContain(`https://generativelanguage.googleapis.com/v1beta/models/${DEFAULT_GEMINI_MODEL}:generateContent`);
     expect(curlCommand).toContain('-H "Content-Type: application/json"');
     expect(curlCommand).toContain('-H "x-goog-api-key: $GEMINI_API_KEY"');
   });
@@ -202,7 +203,7 @@ describe("OllamaService platform provider", () => {
     expect(result).toBe("{\"message\":\"hello\"}");
     expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     expect(mockedAxios.post).toHaveBeenCalledWith(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent",
+      `https://generativelanguage.googleapis.com/v1beta/models/${DEFAULT_GEMINI_MODEL}:generateContent`,
       {
         contents: [
           {

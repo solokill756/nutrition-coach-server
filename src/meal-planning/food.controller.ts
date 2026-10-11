@@ -19,6 +19,7 @@ import { In, Repository } from "typeorm";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { FoodNutritionEntity } from "./entities/food-nutrition.entity";
 import { FoodService } from "./food.service";
+import { UsdaFoodDataService } from "./usda-food-data.service";
 import { CreateFoodDto } from "./dto/create-food.dto";
 import { UpdateFoodDto } from "./dto/update-food.dto";
 
@@ -33,6 +34,7 @@ export class FoodController {
     @InjectRepository(FoodNutritionEntity)
     private readonly foodRepo: Repository<FoodNutritionEntity>,
     private readonly foodService: FoodService,
+    private readonly usda: UsdaFoodDataService,
   ) {}
 
   /** Serialize numeric column; use `null` when DB value is missing so clients can show "no data" vs 0. */
@@ -187,7 +189,17 @@ export class FoodController {
       allowExternalSearch === "true" ||
       allowExternalSearch === "1" ||
       String(allowExternalSearch).toLowerCase() === "true";
-    if (rows.length === 0 && hasSearch && !onlyMine && externalAllowed) {
+    // External sources only fill an empty first page; later pages would re-fetch the same hits.
+    if (rows.length === 0 && hasSearch && !onlyMine && externalAllowed && Math.max(page, 1) === 1) {
+      const usdaFoods = await this.usda.searchAndSync(trimmedSearch, take);
+      if (usdaFoods.length > 0) {
+        return {
+          items: usdaFoods.map((f) => this.toApiItem(f)),
+          total: usdaFoods.length,
+          page: Math.max(page, 1),
+          pageSize: take,
+        };
+      }
       const fallback = await this.foodService.searchFood(trimmedSearch, hideAi);
       if (fallback) {
         return {

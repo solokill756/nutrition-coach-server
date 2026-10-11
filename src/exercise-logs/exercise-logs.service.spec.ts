@@ -26,16 +26,22 @@ describe("ExerciseLogsService", () => {
     await expect(service.create(1, { exerciseId: 5, minutesPerformed: 10 } as any)).rejects.toBeInstanceOf(NotFoundException);
   });
 
+  it("create throws when exercise is unverified and owned by another user", async () => {
+    const { service, exerciseRepo } = setup();
+    exerciseRepo.findOne.mockResolvedValueOnce({ id: 5, name: "Run", met: "8", isVerified: false, userId: 2 });
+    await expect(service.create(1, { exerciseId: 5, minutesPerformed: 10 } as any)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
   it("create throws when startedAt invalid", async () => {
     const { service, exerciseRepo, userRepo } = setup();
-    exerciseRepo.findOne.mockResolvedValueOnce({ id: 5, name: "Run", type: "cardio", met: "8", defaultCalPerMin: null });
+    exerciseRepo.findOne.mockResolvedValueOnce({ id: 5, name: "Run", type: "cardio", met: "8", defaultCalPerMin: null, isVerified: true });
     userRepo.findOne.mockResolvedValueOnce({ id: 1, weight: 60 });
     await expect(service.create(1, { exerciseId: 5, minutesPerformed: 10, startedAt: "bad" } as any)).rejects.toBeInstanceOf(BadRequestException);
   });
 
   it("create/list/summary/softDelete success", async () => {
     const { service, logRepo, exerciseRepo, userRepo, weightService } = setup();
-    exerciseRepo.findOne.mockResolvedValue({ id: 5, name: "Run", type: "cardio", met: "8", defaultCalPerMin: null });
+    exerciseRepo.findOne.mockResolvedValue({ id: 5, name: "Run", type: "cardio", met: "8", defaultCalPerMin: null, isVerified: true });
     userRepo.findOne.mockResolvedValue({ id: 1, weight: 60 });
     weightService.historyDescending.mockResolvedValueOnce([{ weightKg: "65" }]);
 

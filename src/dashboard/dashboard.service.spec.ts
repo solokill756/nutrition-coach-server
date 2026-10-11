@@ -4,6 +4,7 @@ import { DashboardAiService } from "./dashboard-ai.service";
 import { OllamaService } from "../ollama/ollama.service";
 import { RetrievalService } from "../retrieval/retrieval.service";
 import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-unit.service";
+import { DashboardEventBus } from "./dashboard-event-bus";
 
 function createQueryBuilderMock() {
   const qb = {
@@ -110,6 +111,7 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
     hydrationTargetService as never,
     new DashboardAlertService(),
     dashboardAiService,
+    new DashboardEventBus(),
   );
 
   return { service, chat, retrievalService: retrievalService as unknown as { retrieve: jest.Mock } };

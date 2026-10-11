@@ -186,6 +186,19 @@ describe("FoodController external search", () => {
     expect(out.items[0]).toMatchObject({ id: 41, fdcId: 1105314, foodName: "Bananas, raw", calories: 89 });
   });
 
+  it("only falls back to USDA on the first page", async () => {
+    const { controller, foodRepo, foodService, usda } = createController();
+    foodRepo.createQueryBuilder.mockReturnValueOnce(createQb([], 0));
+
+    const out: any = await controller.list(
+      { user: { userId: 7 } } as any, 2, 20, undefined, "rice", undefined, undefined, "true",
+    );
+
+    expect(usda.searchAndSync).not.toHaveBeenCalled();
+    expect(foodService.searchFood).not.toHaveBeenCalled();
+    expect(out.items).toEqual([]);
+  });
+
   it("does not call USDA unless external search is allowed", async () => {
     const { controller, foodRepo, usda } = createController();
     foodRepo.createQueryBuilder.mockReturnValueOnce(createQb([], 0));

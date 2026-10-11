@@ -189,7 +189,8 @@ export class FoodController {
       allowExternalSearch === "true" ||
       allowExternalSearch === "1" ||
       String(allowExternalSearch).toLowerCase() === "true";
-    if (rows.length === 0 && hasSearch && !onlyMine && externalAllowed) {
+    // External sources only fill an empty first page; later pages would re-fetch the same hits.
+    if (rows.length === 0 && hasSearch && !onlyMine && externalAllowed && Math.max(page, 1) === 1) {
       const usdaFoods = await this.usda.searchAndSync(trimmedSearch, take);
       if (usdaFoods.length > 0) {
         return {

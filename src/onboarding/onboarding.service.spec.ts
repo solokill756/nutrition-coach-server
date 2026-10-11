@@ -33,8 +33,10 @@ function createService() {
     build: jest.fn().mockResolvedValue([]),
   };
 
+  const thresholdPersistence: any = { replaceUserThresholds: jest.fn() };
+
   const service = new OnboardingService(
-    dataSource, nutritionCalculator, thresholdBuilder, userRepo, goalRepo, healthRepo, thresholdRepo,
+    dataSource, nutritionCalculator, thresholdBuilder, thresholdPersistence, userRepo, goalRepo, healthRepo, thresholdRepo,
   );
   return { service, nutritionCalculator, userRepo, goalRepo, healthRepo, thresholdRepo, thresholdBuilder };
 }

@@ -43,7 +43,8 @@ dotenv.config({ path: envFilePath, override: true });
         password: config.get<string>("POSTGRES_PASSWORD") || "postgres",
         database: config.get<string>("POSTGRES_DB") || "nutrition_rag",
         autoLoadEntities: true,
-        synchronize: false,
+        // Local dev only: create tables from entities on an empty database.
+        synchronize: String(config.get<string>("TYPEORM_SYNCHRONIZE") || "false").toLowerCase() === "true",
         ssl: String(config.get<string>("POSTGRES_SSL") || "false").toLowerCase() === "true"
           ? { rejectUnauthorized: false }
           : false

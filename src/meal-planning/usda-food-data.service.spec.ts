@@ -3,7 +3,7 @@ import { FoodNutritionEntity } from "./entities/food-nutrition.entity";
 import { UsdaFoodDataService } from "./usda-food-data.service";
 
 jest.mock("axios");
-const mockedGet = axios.get as jest.MockedFunction<typeof axios.get>;
+const mockedPost = axios.post as jest.MockedFunction<typeof axios.post>;
 
 type Row = Partial<FoodNutritionEntity> & { id: number };
 
@@ -41,10 +41,10 @@ const banana = {
   ],
 };
 
-const respond = (foods: unknown[]) => mockedGet.mockResolvedValueOnce({ data: { foods } } as never);
+const respond = (foods: unknown[]) => mockedPost.mockResolvedValueOnce({ data: { foods } } as never);
 
 describe("UsdaFoodDataService", () => {
-  beforeEach(() => mockedGet.mockReset());
+  beforeEach(() => mockedPost.mockReset());
 
   it("maps a USDA hit to a per-100 g verified food", async () => {
     const repo = makeRepo();
@@ -119,7 +119,7 @@ describe("UsdaFoodDataService", () => {
   it("returns nothing when USDA cannot be reached", async () => {
     const repo = makeRepo();
     const service = new UsdaFoodDataService(repo as never, config("k") as never);
-    mockedGet.mockImplementationOnce(() => Promise.reject(new Error("ETIMEDOUT")));
+    mockedPost.mockImplementationOnce(() => Promise.reject(new Error("ETIMEDOUT")));
     expect(await service.searchAndSync("banana", 5)).toEqual([]);
   });
 
@@ -128,18 +128,21 @@ describe("UsdaFoodDataService", () => {
     const service = new UsdaFoodDataService(repo as never, config("") as never);
     respond([]);
     await service.searchAndSync("banana", 3);
-    const params = (mockedGet.mock.calls[0][1] as { params: URLSearchParams }).params;
-    expect(params.get("api_key")).toBe("DEMO_KEY");
-    expect(params.get("query")).toBe("banana");
-    expect(params.get("pageSize")).toBe("3");
+    const [, , options] = mockedPost.mock.calls[0];
+    expect((options as { params: Record<string, string> }).params).toEqual({ api_key: "DEMO_KEY" });
   });
 
-  it("percent-encodes the data types (USDA rejects raw parentheses)", async () => {
+  it("sends the search as a JSON body (USDA rejects some encoded GET queries)", async () => {
     const repo = makeRepo();
     const service = new UsdaFoodDataService(repo as never, config("k") as never);
     respond([]);
-    await service.searchAndSync("banana", 3);
-    const params = (mockedGet.mock.calls[0][1] as { params: URLSearchParams }).params;
-    expect(String(params)).toContain("dataType=Foundation%2CSR+Legacy%2CSurvey+%28FNDDS%29");
+    await service.searchAndSync("chicken soup", 3);
+    const [url, body] = mockedPost.mock.calls[0];
+    expect(url).toBe("https://api.nal.usda.gov/fdc/v1/foods/search");
+    expect(body).toEqual({
+      query: "chicken soup",
+      pageSize: 3,
+      dataType: ["Foundation", "SR Legacy", "Survey (FNDDS)"],
+    });
   });
 });

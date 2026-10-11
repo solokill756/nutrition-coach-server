@@ -6,7 +6,7 @@ import { Repository } from "typeorm";
 import { FoodNutritionEntity } from "./entities/food-nutrition.entity";
 
 const SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search";
-const DATA_TYPES = "Foundation,SR Legacy,Survey (FNDDS)";
+const DATA_TYPES = ["Foundation", "SR Legacy", "Survey (FNDDS)"];
 
 type NutrientField = Exclude<
   keyof FoodNutritionEntity,
@@ -85,16 +85,13 @@ export class UsdaFoodDataService {
 
   private async search(query: string, limit: number): Promise<UsdaFood[]> {
     try {
-      const { data } = await axios.get<{ foods?: UsdaFood[] }>(SEARCH_URL, {
-        // URLSearchParams percent-encodes the "(FNDDS)" parentheses; USDA's nginx rejects them raw.
-        params: new URLSearchParams({
-          api_key: this.apiKey(),
-          query,
-          pageSize: String(limit),
-          dataType: DATA_TYPES,
-        }),
-        timeout: 8000,
-      });
+      // POST with a JSON body: USDA's gateway rejects some GET queries
+      // (multi-word terms, the "(FNDDS)" data type) with a bare 400.
+      const { data } = await axios.post<{ foods?: UsdaFood[] }>(
+        SEARCH_URL,
+        { query, pageSize: limit, dataType: DATA_TYPES },
+        { params: { api_key: this.apiKey() }, timeout: 8000 },
+      );
       return data.foods ?? [];
     } catch (error) {
       this.logger.warn(`USDA search failed for "${query}": ${(error as Error).message}`);

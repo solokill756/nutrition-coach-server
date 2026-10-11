@@ -13,6 +13,11 @@ type ApplyInput = {
   bodyWeightKg?: number;
 };
 
+const DEFAULT_BODY_WEIGHT_KG = 70;
+const PROTEIN_CAP_G_PER_KG = 2.5;
+const FAT_CAP_CALORIE_SHARE = 0.35;
+const CARBS_CAP_CALORIE_SHARE = 0.65;
+
 type RebalanceStatus = "not_requested" | "applied" | "fallback_strict";
 
 @Injectable()
@@ -171,17 +176,36 @@ export class ConditionNutrientRuleApplierService {
     const macroRowMap: Record<string, UserNutritionalThresholdEntity> = { protein, carbs, fat };
     const adjustedNutrients: string[] = [];
 
+    // Safety caps so rebalancing never pushes a macro past a sane upper bound.
+    const weightKg = bodyWeightKg != null && bodyWeightKg > 0 ? bodyWeightKg : DEFAULT_BODY_WEIGHT_KG;
+    const capG: Record<string, number> = {
+      protein: Math.round(weightKg * PROTEIN_CAP_G_PER_KG * 10) / 10,
+      carbs: Math.round(((targetCalories * CARBS_CAP_CALORIE_SHARE) / 4) * 10) / 10,
+      fat: Math.round(((targetCalories * FAT_CAP_CALORIE_SHARE) / 9) * 10) / 10,
+    };
+    const round1 = (n: number) => Math.round(n * 10) / 10;
+
+    let recoveredCalories = 0;
+    const warnings: string[] = [];
+
     for (const macro of unlocked) {
       const row = macroRowMap[macro];
       const calPerGram = macro === "fat" ? 9 : 4;
       const share = pctMap[macro] / totalPct;
-      const extraG = Math.round((deficit * share / calPerGram) * 10) / 10;
+      const wantedG = round1((deficit * share) / calPerGram);
+      if (wantedG <= 0) continue;
+
+      const current = row.maxAmount ?? row.minAmount ?? 0;
+      // Never lower an existing value; only limit how far it may grow.
+      const headroomG = Math.max(0, round1(capG[macro] - current));
+      const extraG = Math.min(wantedG, headroomG);
+      recoveredCalories += extraG * calPerGram;
       if (extraG <= 0) continue;
 
       if (row.maxAmount != null) {
-        row.maxAmount = Math.round((row.maxAmount + extraG) * 10) / 10;
+        row.maxAmount = round1(row.maxAmount + extraG);
       } else if (row.minAmount != null) {
-        row.minAmount = Math.round((row.minAmount + extraG) * 10) / 10;
+        row.minAmount = round1(row.minAmount + extraG);
       } else {
         row.minAmount = extraG;
       }
@@ -189,6 +213,10 @@ export class ConditionNutrientRuleApplierService {
       adjustedNutrients.push(row.nutrient);
     }
 
-    return { status: "applied", adjustedNutrients, warnings: [] };
+    if (deficit - recoveredCalories > 1) {
+      warnings.push(`REBALANCE_PARTIAL:${Math.round(recoveredCalories)}/${deficit}kcal`);
+    }
+
+    return { status: "applied", adjustedNutrients, warnings };
   }
 }

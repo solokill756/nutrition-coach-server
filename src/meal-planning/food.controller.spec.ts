@@ -13,8 +13,9 @@ function createController() {
     createFood: jest.fn(),
     searchFood: jest.fn(),
   };
-  const controller = new FoodController(foodRepo, foodService);
-  return { controller, foodRepo, foodService };
+  const usda: any = { searchAndSync: jest.fn().mockResolvedValue([]) };
+  const controller = new FoodController(foodRepo, foodService, usda);
+  return { controller, foodRepo, foodService, usda };
 }
 
 function createQb(rows: unknown[] = [], count = rows.length) {
@@ -151,5 +152,46 @@ describe("FoodController create/update food library", () => {
 
     expect(foodService.createFood).toHaveBeenCalledWith(7, expect.objectContaining({ description: "Custom oats" }));
     expect(out).toMatchObject({ id: 31, foodName: "Custom oats", calories: 180, proteinG: 6 });
+  });
+});
+
+describe("FoodController external search", () => {
+  const usdaBanana = {
+    id: 41,
+    foodName: "Bananas, raw",
+    category: "USDA Foundation",
+    fdcId: 1105314,
+    calories: 89,
+    protein: 1.09,
+    carbs: 22.84,
+    fat: 0.33,
+    servingSize: 100,
+    servingUnit: "g",
+    servingsPerContainer: 1,
+    isVerified: true,
+  };
+
+  it("returns USDA foods when the database has no match", async () => {
+    const { controller, foodRepo, foodService, usda } = createController();
+    foodRepo.createQueryBuilder.mockReturnValueOnce(createQb([], 0));
+    usda.searchAndSync.mockResolvedValueOnce([usdaBanana]);
+
+    const out: any = await controller.list(
+      { user: { userId: 7 } } as any, 1, 20, undefined, "banana", undefined, undefined, "true",
+    );
+
+    expect(usda.searchAndSync).toHaveBeenCalledWith("banana", 20);
+    expect(foodService.searchFood).not.toHaveBeenCalled();
+    expect(out.total).toBe(1);
+    expect(out.items[0]).toMatchObject({ id: 41, fdcId: 1105314, foodName: "Bananas, raw", calories: 89 });
+  });
+
+  it("does not call USDA unless external search is allowed", async () => {
+    const { controller, foodRepo, usda } = createController();
+    foodRepo.createQueryBuilder.mockReturnValueOnce(createQb([], 0));
+
+    await controller.list({ user: { userId: 7 } } as any, 1, 20, undefined, "banana");
+
+    expect(usda.searchAndSync).not.toHaveBeenCalled();
   });
 });

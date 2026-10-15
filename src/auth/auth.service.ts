@@ -419,6 +419,9 @@ export class AuthService {
   }
 
   async refresh(dto: RefreshDto, ipAddress?: string): Promise<AuthResponse> {
+    if (!dto.refreshToken) {
+      throw this.unauthorized("auth.errors.invalidRefreshToken");
+    }
     const payload = await this.verifyRefreshToken(dto.refreshToken);
     const refreshHash = this.hashToken(dto.refreshToken);
 
@@ -461,6 +464,33 @@ export class AuthService {
       .where('"UserId" = :userId AND "IsRevoked" = false', { userId })
       .execute();
 
+    return { success: true };
+  }
+
+  /**
+   * Revokes the one session this refresh token belongs to. Signing out must
+   * never fail, so an unknown, expired or already revoked token is a success.
+   */
+  async logout(refreshToken?: string): Promise<{ success: boolean }> {
+    if (!refreshToken) {
+      return { success: true };
+    }
+    let payload: JwtRefreshPayload;
+    try {
+      payload = await this.verifyRefreshToken(refreshToken);
+    } catch {
+      return { success: true };
+    }
+
+    await this.sessionRepo.update(
+      {
+        id: payload.sid,
+        userId: payload.sub,
+        refreshTokenHash: this.hashToken(refreshToken),
+        isRevoked: false,
+      },
+      { isRevoked: true, lastUsedAt: new Date() },
+    );
     return { success: true };
   }
 

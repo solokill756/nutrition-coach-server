@@ -70,16 +70,40 @@ export function scoreWarnings(
   target: MealNutritionTarget,
 ): string[] {
   const warnings: string[] = [];
-  const check = (label: string, value: number | undefined, targetValue: number) => {
+  const check = (
+    label: string,
+    value: number | undefined,
+    targetValue: number,
+    unit: string,
+  ) => {
     if (targetValue <= 0 || value == null) return;
     const diff = Math.abs(value - targetValue) / targetValue;
     if (diff > 0.15) {
-      warnings.push(`${label} differs from the slot target by about ${Math.round(diff * 100)}%.`);
+      const direction = value > targetValue ? "above" : "below";
+      warnings.push(
+        `${label} is ${Math.round(diff * 100)}% ${direction} this meal's target ` +
+          `(${Math.round(value)} ${unit} vs ${Math.round(targetValue)} ${unit}).`,
+      );
     }
   };
-  check("Calories", actual.calories, target.calories);
-  check("Protein", actual.protein, target.protein);
-  check("Carbs", actual.carbs, target.carbs);
-  check("Fat", actual.fat, target.fat);
+  check("Calories", actual.calories, target.calories, "kcal");
+  check("Protein", actual.protein, target.protein, "g");
+  check("Carbs", actual.carbs, target.carbs, "g");
+  check("Fat", actual.fat, target.fat, "g");
   return warnings;
+}
+
+/**
+ * Most kcal one serving may have: this meal's share of the day, but never more
+ * than what is left today. (Not "left today × share": that shrinks every later
+ * meal even when the day is on plan.) Null when nothing is known about today.
+ */
+export function slotCaloriesCap(
+  ctx: RecipeGenerationContext,
+  mealSlot: RecipeMealSlot,
+): number | null {
+  const remaining = ctx.remaining.calories;
+  if (remaining == null || !Number.isFinite(remaining)) return null;
+  const share = slotTarget(ctx, mealSlot).calories;
+  return Math.max(0, Math.round(Math.min(remaining, share)));
 }

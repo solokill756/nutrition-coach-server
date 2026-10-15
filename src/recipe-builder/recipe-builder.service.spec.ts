@@ -398,3 +398,58 @@ describe("RecipeBuilderService AI safeguards", () => {
     });
   });
 });
+
+describe("RecipeBuilderService meal targets and prompt", () => {
+  it("judges potassium against the meal's share of the daily target", () => {
+    const { service } = createService();
+    const check = (potassium: number) =>
+      (service as any).validateNutritionAgainstThresholds(
+        { nutritionPerServing: { potassium } },
+        { thresholds: [{ nutrient: "potassium", minAmount: 4700 }] },
+        "dinner",
+      );
+    // Dinner is 30% of the day: about 1,410 mg of 4,700 mg.
+    expect(check(1728)).toEqual([]);
+    expect(check(900)).toEqual([
+      "Potassium is low for this dinner: 900 mg vs about 1,410 mg (30% of your 4,700 mg daily target).",
+    ]);
+  });
+
+  it("tells the AI this meal's targets and sends a lean prompt", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(
+      makeRecipeCtx({
+        todayIntake: { ...makeRecipeCtx().todayIntake, totalCalories: 1200 },
+        remaining: { ...makeRecipeCtx().remaining, calories: 800 },
+      }),
+    );
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: { name: "Chicken Bowl", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "cook" }] },
+        recommendation: "",
+      }),
+    );
+
+    await service.generateRecipe({ mealSlot: "dinner", foodIds: [10] } as any, 1);
+
+    const [system, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    const prompt = `${system.content}\n${user.content}`;
+    // 2000 kcal/day, dinner 30%: 600 kcal, 38 g protein, 75 g carbs, 17 g fat.
+    expect(user.content).toContain(
+      "Aim for ONE serving of this dinner at about 600 kcal, 38 g protein, 75 g carbs, 17 g fat (stay within ±15%).",
+    );
+    // 800 kcal left today must not shrink dinner to 800 × 30% = 240.
+    expect(user.content).toContain("Hard max kcal for ONE serving of this meal slot: ~600 kcal.");
+    expect(user.content).toContain("Protein left today (a ceiling, not a target): ~120 g.");
+    expect(user.content).not.toContain("Max protein (g) per serving");
+    expect(prompt).not.toContain("food_id");
+    expect(prompt).not.toContain("catalogUnitLabel");
+    expect(prompt.match(/catalog reference portions/g)).toHaveLength(1);
+    // JSON blocks are compact, not indented.
+    expect(user.content).not.toMatch(/\n {2}"/);
+  });
+});

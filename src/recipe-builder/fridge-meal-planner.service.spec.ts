@@ -203,6 +203,34 @@ describe("FridgeMealPlannerService slot allocation and regeneration", () => {
     expect(targets.get("dinner")!.calories).toBe(600);     // 30%
   });
 
+  it("splits the plan by the user's meal split and skips 0% meals", () => {
+    const { service } = createService();
+    const ctx: any = {
+      dailyTargetCalories: 2000,
+      thresholds: [],
+      remaining: { calories: 1500 },
+      todayIntake: { totalCalories: 500 },
+      mealSplits: { breakfast: 0.2, lunch: 0.4, dinner: 0.4, snack: 0 },
+    };
+    const targets = (service as any).targetsForSlots(ctx, ["breakfast", "lunch", "snack"], 1500);
+    expect(targets.get("breakfast").calories).toBe(500);
+    expect(targets.get("lunch").calories).toBe(1000);
+    expect(targets.has("snack")).toBe(false);
+  });
+
+  it("falls back to the default split when every chosen meal is 0%", () => {
+    const { service } = createService();
+    const ctx: any = {
+      dailyTargetCalories: 2000,
+      thresholds: [],
+      remaining: { calories: 300 },
+      todayIntake: { totalCalories: 1700 },
+      mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 },
+    };
+    const targets = (service as any).targetsForSlots(ctx, ["snack"], 300);
+    expect(targets.get("snack").calories).toBe(300);
+  });
+
   it("regenerates one meal slot without replacing the whole plan (returns single slot result)", async () => {
     const { service, recipeBuilderService } = createService();
     // Not logged, so will generate

@@ -15,6 +15,23 @@ export const MEAL_SPLITS: Record<RecipeMealSlot, number> = {
   dinner: 0.3,
 };
 
+/** This meal's share of the day from the user's split (may be 0), else the default. */
+export function userMealShare(ctx: RecipeGenerationContext, mealSlot: RecipeMealSlot): number {
+  const share = ctx.mealSplits?.[mealSlot];
+  return typeof share === "number" && Number.isFinite(share) && share >= 0
+    ? share
+    : MEAL_SPLITS[mealSlot];
+}
+
+/** Share used for one meal's targets: the user's, or the default when they set it to 0%. */
+export function mealShare(ctx: RecipeGenerationContext, mealSlot: RecipeMealSlot): number {
+  const share = userMealShare(ctx, mealSlot);
+  return share > 0 ? share : MEAL_SPLITS[mealSlot];
+}
+
+export const usesDefaultShare = (ctx: RecipeGenerationContext, mealSlot: RecipeMealSlot) =>
+  userMealShare(ctx, mealSlot) === 0;
+
 export function thresholdMidpoint(
   ctx: RecipeGenerationContext,
   nutrient: string,
@@ -37,7 +54,7 @@ export function slotTarget(
     ctx.dailyTargetCalories ??
     thresholdMidpoint(ctx, "calories") ??
     Math.max(1600, Math.round((ctx.remaining.calories ?? 2000) + ctx.todayIntake.totalCalories));
-  const split = MEAL_SPLITS[mealSlot];
+  const split = mealShare(ctx, mealSlot);
   return {
     calories: Math.round(dailyCalories * split),
     protein: Math.round((thresholdMidpoint(ctx, "protein") ?? (dailyCalories * 0.25) / 4) * split),

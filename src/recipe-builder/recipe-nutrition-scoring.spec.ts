@@ -1,6 +1,8 @@
 import {
   MEAL_SPLITS,
   distanceScore,
+  mealShare,
+  usesDefaultShare,
   scoreNutrition,
   scoreWarnings,
   slotCaloriesCap,
@@ -112,5 +114,25 @@ describe("recipe-nutrition-scoring", () => {
     expect(slotCaloriesCap(eatenSoFar(300), "dinner")).toBe(300);
     expect(slotCaloriesCap(eatenSoFar(0), "dinner")).toBe(0);
     expect(slotCaloriesCap(eatenSoFar(null), "dinner")).toBeNull();
+  });
+
+  it("uses the user's meal split for a meal's targets", () => {
+    const ctx = makeCtx({
+      dailyTargetCalories: 2000,
+      mealSplits: { breakfast: 0.2, lunch: 0.4, dinner: 0.35, snack: 0.05 },
+    } as any);
+    expect(slotTarget(ctx, "lunch").calories).toBe(800);
+    expect(slotCaloriesCap(ctx, "lunch")).toBe(800);
+  });
+
+  it("falls back to the default share for a meal set to 0%", () => {
+    const ctx = makeCtx({
+      dailyTargetCalories: 2000,
+      mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 },
+    } as any);
+    expect(mealShare(ctx, "snack")).toBe(0.1);
+    expect(usesDefaultShare(ctx, "snack")).toBe(true);
+    expect(usesDefaultShare(ctx, "lunch")).toBe(false);
+    expect(slotTarget(ctx, "snack").calories).toBe(200);
   });
 });

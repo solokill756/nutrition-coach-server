@@ -17,6 +17,7 @@ import { ConditionNutrientRuleApplierService } from "./condition-nutrient-rule-a
 import { ConditionNutrientUnitService } from "./condition-nutrient-unit.service";
 import { buildConditionRelatedThresholds } from "./condition-related-thresholds";
 import { localDateKeyNow } from "../common/date/calendar-day-bounds";
+import { resolveMealSplits, type MealSplitsFraction } from "./meal-splits";
 
 export type RecipeGenerationMealSlot = "breakfast" | "lunch" | "dinner" | "snack";
 
@@ -37,6 +38,7 @@ interface UserStaticContext {
     endDate: Date | null;
   }>;
   dailyTargetCalories: number | null;
+  mealSplits: MealSplitsFraction;
 }
 
 const USV_STATIC_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -110,6 +112,8 @@ export interface RecipeGenerationContext {
     totalPotassium: number;
   };
   dailyTargetCalories: number | null;
+  /** The user's share of the day per meal (fractions); missing = MEAL_SPLITS. */
+  mealSplits?: MealSplitsFraction;
   remaining: {
     calories: number | null;
     sodiumMg: number | null;
@@ -308,6 +312,7 @@ export class UserContextService {
         endDate: g.endDate,
       })),
       dailyTargetCalories,
+      mealSplits: resolveMealSplits(user.mealSplits),
     };
 
     return data;
@@ -398,6 +403,7 @@ export class UserContextService {
       recentRecipeLogs,
       todayIntake,
       dailyTargetCalories,
+      mealSplits: staticCtx.mealSplits,
       remaining: {
         calories: dailyTargetCalories != null ? Math.max(0, dailyTargetCalories - todayIntake.totalCalories) : null,
         sodiumMg: sodiumLimit != null ? Math.max(0, sodiumLimit - todayIntake.totalSodium) : null,

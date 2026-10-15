@@ -452,4 +452,40 @@ describe("RecipeBuilderService meal targets and prompt", () => {
     // JSON blocks are compact, not indented.
     expect(user.content).not.toMatch(/\n {2}"/);
   });
+
+  it("judges potassium against the user's own share for the meal", () => {
+    const { service } = createService();
+    const warnings = (service as any).validateNutritionAgainstThresholds(
+      { nutritionPerServing: { potassium: 1500 } },
+      { thresholds: [{ nutrient: "potassium", minAmount: 4700 }] },
+      "dinner",
+      0.4,
+    );
+    expect(warnings).toEqual([
+      "Potassium is low for this dinner: 1,500 mg vs about 1,880 mg (40% of your 4,700 mg daily target).",
+    ]);
+  });
+
+  it("warns when a 0% meal falls back to the default share", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(
+      makeRecipeCtx({ mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 } }),
+    );
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: { name: "Snack", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "eat" }] },
+        recommendation: "",
+      }),
+    );
+    const result = await service.generateRecipe({ mealSlot: "snack", foodIds: [10] } as any, 1);
+    expect(result.generationWarnings).toContain(
+      "You set snacks to 0% of your day; this recipe uses the default 10%.",
+    );
+    const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    expect(user.content).toContain("Aim for ONE serving of this snack at about 200 kcal");
+  });
 });

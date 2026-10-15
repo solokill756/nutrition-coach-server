@@ -123,6 +123,37 @@ describe("RecipeBuilderService", () => {
     expect(() => (service as any).parseRecipeAiResponse("xxx")).toThrow(BadGatewayException);
   });
 
+  it("parseRecipeAiResponse turns the model's written times into whole minutes", () => {
+    const { service } = createService();
+    const { recipe } = (service as any).parseRecipeAiResponse(
+      JSON.stringify({
+        recipe: {
+          name: "Apple porridge",
+          preparationTime: "10 minutes",
+          cookingTime: "1 hour",
+          steps: [
+            { order: 1, instruction: "Dice.", duration: "2 minutes" },
+            { order: 2, instruction: "Simmer.", duration: 5 },
+            { order: 3, instruction: "Serve.", duration: "until thick" },
+          ],
+        },
+      }),
+    );
+    expect(recipe.preparationTime).toBe(10);
+    expect(recipe.cookingTime).toBe(60);
+    expect(recipe.steps.map((s: { duration?: number }) => s.duration)).toEqual([2, 5, undefined]);
+  });
+
+  it("parseRecipeAiResponse defaults unreadable recipe times to 0", () => {
+    const { service } = createService();
+    const { recipe } = (service as any).parseRecipeAiResponse(
+      JSON.stringify({ recipe: { name: "X", preparationTime: "quick", steps: "none" } }),
+    );
+    expect(recipe.preparationTime).toBe(0);
+    expect(recipe.cookingTime).toBe(0);
+    expect(recipe.steps).toEqual([]);
+  });
+
   it("safeParse returns object or empty", () => {
     const { service } = createService();
     expect((service as any).safeParse("{\"a\":1}")).toEqual({ a: 1 });

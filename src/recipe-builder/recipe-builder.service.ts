@@ -14,8 +14,10 @@ import {
   RecipeBuilderRequest,
   RecipeBuilderResponse,
   RecipeMealSlot,
+  RecipeStep,
   UpdateRecipeDto,
 } from "./dto/recipe.dto";
+import { minutesFrom } from "./ai-minutes";
 import { RetrievalService } from "../retrieval/retrieval.service";
 import { RAG_CONFIDENCE_THRESHOLD } from "../retrieval/rag-confidence";
 import { OllamaService } from "../ollama/ollama.service";
@@ -1109,7 +1111,7 @@ export class RecipeBuilderService {
         throw new Error("Missing recipe object");
       }
       return {
-        recipe: parsed.recipe,
+        recipe: this.withWholeMinutes(parsed.recipe),
         alternativeRecipes: parsed.alternativeRecipes,
         recommendation: parsed.recommendation,
       };
@@ -1120,6 +1122,20 @@ export class RecipeBuilderService {
         message: "Recipe AI returned an invalid response. Please try again.",
       });
     }
+  }
+
+  /** The model writes times as text ("10 minutes"); the API promises whole minutes. */
+  private withWholeMinutes(recipe: Recipe): Recipe {
+    const steps: unknown[] = Array.isArray(recipe.steps) ? recipe.steps : [];
+    return {
+      ...recipe,
+      preparationTime: minutesFrom(recipe.preparationTime) ?? 0,
+      cookingTime: minutesFrom(recipe.cookingTime) ?? 0,
+      steps: steps.map((step) => {
+        const s = step as RecipeStep;
+        return { ...s, duration: minutesFrom(s.duration) ?? undefined };
+      }),
+    };
   }
 
   private async enrichRecipeWithRealNutrition(recipe: Recipe): Promise<Recipe> {

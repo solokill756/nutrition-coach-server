@@ -314,7 +314,11 @@ export class AuthService {
       activityLevel: user.fitnessLevel,
       goalType: slug,
     });
-    const adjustedCalories = plan.targetCalories;
+    // A user-chosen target keeps the plan's macro percentages; grams scale with it.
+    const adjustedCalories = dto.targetCalories ?? plan.targetCalories;
+    const gramScale =
+      plan.targetCalories > 0 ? adjustedCalories / plan.targetCalories : 1;
+    const scaleG = (g: number) => Math.round(g * gramScale * 10) / 10;
 
     await this.goalRepo.manager.transaction(async (manager) => {
       await manager.update(
@@ -327,9 +331,9 @@ export class AuthService {
         userId,
         targetCalories: adjustedCalories,
         macroCenter: {
-          proteinG: plan.proteinG,
-          carbsG: plan.carbsG,
-          fatG: plan.fatG,
+          proteinG: scaleG(plan.proteinG),
+          carbsG: scaleG(plan.carbsG),
+          fatG: scaleG(plan.fatG),
           proteinPercent: plan.proteinPercent,
           carbsPercent: plan.carbsPercent,
           fatPercent: plan.fatPercent,

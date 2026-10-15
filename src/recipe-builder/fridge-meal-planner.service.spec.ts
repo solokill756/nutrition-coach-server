@@ -66,6 +66,7 @@ function createService() {
     stapleFoodService,
     recipeBuilderService,
     stapleAllocationService,
+    userContextService,
     userRepo,
     config,
     logFoodRepo,
@@ -201,6 +202,56 @@ describe("FridgeMealPlannerService slot allocation and regeneration", () => {
     expect(targets.get("lunch")!.calories).toBe(700);      // 35%
     expect(targets.get("snack")!.calories).toBe(200);      // 10%
     expect(targets.get("dinner")!.calories).toBe(600);     // 30%
+  });
+
+  it("splits the plan by the user's meal split and skips 0% meals", () => {
+    const { service } = createService();
+    const ctx: any = {
+      dailyTargetCalories: 2000,
+      thresholds: [],
+      remaining: { calories: 1500 },
+      todayIntake: { totalCalories: 500 },
+      mealSplits: { breakfast: 0.2, lunch: 0.4, dinner: 0.4, snack: 0 },
+    };
+    const targets = (service as any).targetsForSlots(ctx, ["breakfast", "lunch", "snack"], 1500);
+    expect(targets.get("breakfast").calories).toBe(500);
+    expect(targets.get("lunch").calories).toBe(1000);
+    expect(targets.has("snack")).toBe(false);
+  });
+
+  it("gives no staples to a 0% meal and skips it in the daily plan", async () => {
+    const { service, stapleAllocationService, userContextService, recipeBuilderService } = createService();
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue({
+      dailyTargetCalories: 2000,
+      remaining: { calories: 2000 },
+      todayIntake: { totalCalories: 0 },
+      thresholds: [],
+      profile: { dietType: null, allergies: [] },
+      healthDetailed: [],
+      conditionRelatedThresholds: [],
+      mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 },
+    });
+
+    const out = await service.generateDailyPlan(1, "2026-06-11");
+
+    const { generatingSlots } = stapleAllocationService.allocateStaplesForPlan.mock.calls[0][0];
+    expect(generatingSlots).not.toContain("snack");
+    expect(out.slots.find((s) => s.mealSlot === "snack")).toMatchObject({ status: "skipped", recipe: null });
+    const generated = recipeBuilderService.generateRecipe.mock.calls.map(([input]: any[]) => input.mealSlot);
+    expect(generated).not.toContain("snack");
+  });
+
+  it("falls back to the default split when every chosen meal is 0%", () => {
+    const { service } = createService();
+    const ctx: any = {
+      dailyTargetCalories: 2000,
+      thresholds: [],
+      remaining: { calories: 300 },
+      todayIntake: { totalCalories: 1700 },
+      mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 },
+    };
+    const targets = (service as any).targetsForSlots(ctx, ["snack"], 300);
+    expect(targets.get("snack").calories).toBe(300);
   });
 
   it("regenerates one meal slot without replacing the whole plan (returns single slot result)", async () => {

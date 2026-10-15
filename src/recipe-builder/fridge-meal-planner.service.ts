@@ -23,6 +23,7 @@ import {
   scoreWarnings,
   slotTarget,
   thresholdMidpoint,
+  userMealShare,
 } from "./recipe-nutrition-scoring";
 import { FridgeStapleAllocationService } from "./fridge-staple-allocation.service";
 import type { StapleAllocationMap } from "./fridge-staple-allocation";
@@ -217,9 +218,11 @@ export class FridgeMealPlannerService {
     }
 
     const targetsBySlot = this.targetsForSlots(ctx, slotsToGenerate, remainingCalories);
+    // Meals without a target (0% of the user's day) get no staples: they are skipped below.
+    const plannedSlots = slotsToGenerate.filter((slot) => targetsBySlot.has(slot));
     const allocationResult = await this.stapleAllocationService.allocateStaplesForPlan({
       staples,
-      generatingSlots: slotsToGenerate,
+      generatingSlots: plannedSlots,
       ctx,
       slotTargets: targetsBySlot,
     });
@@ -441,7 +444,13 @@ export class FridgeMealPlannerService {
     slots: RecipeMealSlot[],
     remainingCalories: number,
   ): Map<RecipeMealSlot, MealNutritionTarget> {
-    const totalSplit = slots.reduce((sum, slot) => sum + MEAL_SPLITS[slot], 0);
+    // The user's split; 0% meals are skipped. If every chosen meal is 0%, use the default.
+    const userShares = slots.map((slot) => [slot, userMealShare(ctx, slot)] as const);
+    const anyPositive = userShares.some(([, share]) => share > 0);
+    const shares = new Map(
+      userShares.map(([slot, share]) => [slot, anyPositive ? share : MEAL_SPLITS[slot]]),
+    );
+    const totalSplit = [...shares.values()].reduce((sum, share) => sum + share, 0);
     const targets = new Map<RecipeMealSlot, MealNutritionTarget>();
     if (slots.length === 0 || totalSplit <= 0 || remainingCalories <= 0) {
       return targets;
@@ -451,7 +460,9 @@ export class FridgeMealPlannerService {
       thresholdMidpoint(ctx, "calories") ??
       Math.max(1600, Math.round((ctx.remaining.calories ?? 2000) + ctx.todayIntake.totalCalories));
     for (const slot of slots) {
-      const normalizedSplit = MEAL_SPLITS[slot] / totalSplit;
+      const share = shares.get(slot) ?? 0;
+      if (share <= 0) continue;
+      const normalizedSplit = share / totalSplit;
       const calories = Math.max(0, Math.round(remainingCalories * normalizedSplit));
       const calorieRatio = dailyCalories > 0 ? calories / dailyCalories : normalizedSplit;
       targets.set(slot, {

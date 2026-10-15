@@ -37,9 +37,12 @@ import { buildRecipeGenerationRagQuery } from "./recipe-rag-query";
 import { resolveClientDateKey } from "../common/date/calendar-day-bounds";
 import {
   MEAL_SPLITS,
+  mealShare,
   scoreNutrition,
   scoreWarnings,
+  slotCaloriesCap,
   slotTarget,
+  usesDefaultShare,
 } from "./recipe-nutrition-scoring";
 import { RECIPE_PROMPTS } from "./constants/recipe-prompts";
 
@@ -76,19 +79,6 @@ export class RecipeBuilderService {
 
   private nonNegativeNumber(value: unknown, fallback = 0): number {
     return Math.max(0, this.finiteNumber(value, fallback));
-  }
-
-  private slotCaloriesCap(
-    ctx: RecipeGenerationContext,
-    mealSlot: RecipeMealSlot,
-  ): number | null {
-    const split = MEAL_SPLITS[mealSlot];
-    if (!Number.isFinite(split) || split <= 0) return null;
-    const remainingCalories = ctx.remaining.calories;
-    if (remainingCalories == null || !Number.isFinite(remainingCalories)) {
-      return null;
-    }
-    return Math.max(0, Math.round(remainingCalories * split));
   }
 
   private positiveInteger(value: unknown, fallback: number): number {
@@ -168,10 +158,10 @@ export class RecipeBuilderService {
     const staplePayload = staples.map((f) => {
       const servingSizeG = f.servingSize > 0 ? f.servingSize : 100;
       const servingUnit = (f.servingUnit || "g").trim();
+      // Only what the model needs to pick amounts; the server fills names, units
+      // and nutrition back in from the catalog by foodId (and still accepts food_id).
       return {
         foodId: Number(f.id),
-        /** Alias some models emit; server normalizes to foodId. */
-        food_id: Number(f.id),
         foodName: f.foodName,
         caloriesPerServing: f.calories,
         proteinG: f.protein,
@@ -181,8 +171,6 @@ export class RecipeBuilderService {
         fiberG: f.fiber,
         servingSizeG,
         servingUnit,
-        /** Exact first unit label the mobile app builds from DB (e.g. "100 g"). LLM must copy this into ingredient.unit. */
-        catalogUnitLabel: this.catalogReferenceUnitLabel(f),
       };
     });
 
@@ -220,10 +208,17 @@ export class RecipeBuilderService {
       .join("\n\n");
 
     const allowedIds = [...stapleIds].join(", ");
-    const budgetLines: string[] = [];
+    // The same per-meal target the result is scored against, so the model
+    // aims for what it will be judged on.
+    const nutritionTarget = slotTarget(recipeCtx, input.mealSlot);
+    const budgetLines: string[] = [
+      `Aim for ONE serving of this ${input.mealSlot} at about ${nutritionTarget.calories} kcal, ` +
+        `${nutritionTarget.protein} g protein, ${nutritionTarget.carbs} g carbs, ` +
+        `${nutritionTarget.fat} g fat (stay within ±15%).`,
+    ];
     const r = recipeCtx.remaining;
     const maxCalories = Number(constraints.maxCalories);
-    const slotCapCalories = this.slotCaloriesCap(recipeCtx, input.mealSlot);
+    const slotCapCalories = slotCaloriesCap(recipeCtx, input.mealSlot);
     const effectiveMaxCalories =
       Number.isFinite(maxCalories) && maxCalories > 0
         ? slotCapCalories != null
@@ -247,7 +242,7 @@ export class RecipeBuilderService {
       budgetLines.push(`Max carbs (g) per serving: ~${Math.round(r.carbsG * 10) / 10} g remaining today.`);
     }
     if (r.proteinG != null) {
-      budgetLines.push(`Max protein (g) per serving: ~${Math.round(r.proteinG * 10) / 10} g remaining today.`);
+      budgetLines.push(`Protein left today (a ceiling, not a target): ~${Math.round(r.proteinG * 10) / 10} g.`);
     }
     if (r.fatG != null) {
       budgetLines.push(`Max fat (g) per serving: ~${Math.round(r.fatG * 10) / 10} g remaining today.`);
@@ -300,6 +295,12 @@ export class RecipeBuilderService {
 
     let enrichedRecipe = await this.enrichRecipeWithRealNutrition(recipe);
     const generationWarnings: string[] = [];
+    if (usesDefaultShare(recipeCtx, input.mealSlot)) {
+      const meal = input.mealSlot === "snack" ? "snacks" : input.mealSlot;
+      generationWarnings.push(
+        `You set ${meal} to 0% of your day; this recipe uses the default ${Math.round(MEAL_SPLITS[input.mealSlot] * 100)}%.`,
+      );
+    }
     const effectiveRemaining = {
       ...recipeCtx.remaining,
       calories:
@@ -320,7 +321,6 @@ export class RecipeBuilderService {
       budgetStatus = this.verifyBudget(enrichedRecipe, effectiveRemaining, generationWarnings);
     }
 
-    const nutritionTarget = slotTarget(recipeCtx, input.mealSlot);
     const score = scoreNutrition(
       enrichedRecipe.nutritionPerServing ?? {},
       nutritionTarget,
@@ -334,7 +334,12 @@ export class RecipeBuilderService {
       recipe: enrichedRecipe,
       alternativeRecipes: parsedData.alternativeRecipes || [],
       recommendation: parsedData.recommendation || "",
-      safetyWarnings: this.validateNutritionAgainstThresholds(enrichedRecipe, userContextCompat),
+      safetyWarnings: this.validateNutritionAgainstThresholds(
+        enrichedRecipe,
+        userContextCompat,
+        input.mealSlot,
+        mealShare(recipeCtx, input.mealSlot),
+      ),
       generationWarnings,
       budgetStatus,
       score,
@@ -1270,7 +1275,12 @@ export class RecipeBuilderService {
     return recipe;
   }
 
-  private validateNutritionAgainstThresholds(recipe: Recipe, context: UserMealContext | null): string[] {
+  private validateNutritionAgainstThresholds(
+    recipe: Recipe,
+    context: UserMealContext | null,
+    mealSlot?: RecipeMealSlot,
+    share?: number,
+  ): string[] {
     const warnings: string[] = [];
     if (!recipe || !recipe.nutritionPerServing || !context || context.thresholds.length === 0) {
       return warnings;
@@ -1295,8 +1305,20 @@ export class RecipeBuilderService {
       if (nutrient === "cholesterol" && t.maxAmount && cholesterol > t.maxAmount) {
         warnLimit("cholesterol", cholesterol, "mg", t.maxAmount);
       }
-      if (nutrient === "potassium" && t.minAmount && potassium < t.minAmount) {
-        warnings.push(`Caution: Recipe potassium (${potassium}mg) is below your daily target of ${t.minAmount}mg.`);
+      if (nutrient === "potassium" && t.minAmount) {
+        // A daily minimum is met across the day: judge one serving against this
+        // meal's share of it, not the whole day's amount.
+        const fraction = share ?? (mealSlot ? MEAL_SPLITS[mealSlot] : 1);
+        const needed = Math.round(Number(t.minAmount) * fraction);
+        if (potassium < needed) {
+          const fmt = (n: number) => Math.round(n).toLocaleString("en-US");
+          warnings.push(
+            mealSlot
+              ? `Potassium is low for this ${mealSlot}: ${fmt(potassium)} mg vs about ${fmt(needed)} mg ` +
+                  `(${Math.round(fraction * 100)}% of your ${fmt(Number(t.minAmount))} mg daily target).`
+              : `Potassium is low: ${fmt(potassium)} mg vs your ${fmt(needed)} mg daily target.`,
+          );
+        }
       }
       if (nutrient === "sodium" && t.maxAmount && sodium > t.maxAmount) {
         warnings.push(`⚠️ Caution: Recipe sodium (${sodium}mg) exceeds your custom limit of ${t.maxAmount}mg.`);

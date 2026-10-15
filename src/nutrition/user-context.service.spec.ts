@@ -55,6 +55,16 @@ describe("UserContextService", () => {
     ]);
   });
 
+  it("assembleRecipeGenerationContext carries the user's meal split", async () => {
+    const { service, userRepo } = setup();
+    userRepo.findOne.mockResolvedValueOnce({
+      id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active",
+      mealSplits: { breakfast: 20, lunch: 40, dinner: 35, snack: 5 },
+    });
+    const out = await service.assembleRecipeGenerationContext(1, "2026-05-31", "lunch");
+    expect(out.mealSplits).toEqual({ breakfast: 0.2, lunch: 0.4, dinner: 0.35, snack: 0.05 });
+  });
+
   it("assembleRecipeGenerationContext maps recipe logs from the single 3-day log query without loading food history", async () => {
     const { service, userRepo, goalRepo, healthRepo, thresholdRepo, logRepo, foodRepo, recipeRepo } = setup();
     const loggedAt = new Date("2026-05-30T00:00:00.000Z");

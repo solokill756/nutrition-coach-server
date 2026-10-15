@@ -24,6 +24,7 @@ const buildService = (privateKey: string) => {
   const unused = {} as never;
   return new AuthService(
     config, unused, unused, unused, unused, unused, unused, unused, unused, unused, unused, unused,
+    unused,
   );
 };
 

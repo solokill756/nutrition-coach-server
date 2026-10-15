@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -74,8 +75,20 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   "validation.isDateString": "Value must be a valid ISO 8601 date string",
 };
 
+/**
+ * Turns FIREBASE_PRIVATE_KEY from the environment into a PEM string.
+ * dotenv strips surrounding quotes but `docker run --env-file` keeps them,
+ * and both leave line breaks escaped as `\n`.
+ */
+function normalizeFirebasePrivateKey(raw: string): string {
+  const trimmed = raw.trim();
+  const unquoted = /^(["'])([\s\S]*)\1$/.exec(trimmed)?.[2] ?? trimmed;
+  return unquoted.replace(/\\n/g, "\n").trim();
+}
+
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private firebaseAuthClient: Auth | null = null;
 
   constructor(
@@ -774,6 +787,8 @@ export class AuthService {
       if (error instanceof BadRequestException) {
         throw error;
       }
+      const { code, message } = error as { code?: string; message?: string };
+      this.logger.warn(`Firebase ID token rejected: ${code ?? "unknown"} ${message ?? ""}`);
       throw this.unauthorized("auth.errors.invalidProviderIdToken");
     }
   }
@@ -795,22 +810,31 @@ export class AuthService {
     const clientEmail = (
       this.config.get<string>("FIREBASE_CLIENT_EMAIL") || ""
     ).trim();
-    const privateKeyRaw = this.config.get<string>("FIREBASE_PRIVATE_KEY") || "";
-    const privateKey = privateKeyRaw.replace(/\\n/g, "\n").trim();
+    const privateKey = normalizeFirebasePrivateKey(
+      this.config.get<string>("FIREBASE_PRIVATE_KEY") || "",
+    );
 
     if (!projectId || !clientEmail || !privateKey) {
       throw this.badRequest("auth.errors.firebaseOauthNotConfigured");
     }
 
-    const app = initializeApp({
-      credential: cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      }),
-    });
-
-    this.firebaseAuthClient = getAuth(app);
+    try {
+      const app = initializeApp({
+        credential: cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+      });
+      this.firebaseAuthClient = getAuth(app);
+    } catch (error) {
+      // A bad service-account key is a server problem; reporting it as an
+      // invalid client token hides the real cause.
+      this.logger.error(
+        `Firebase Admin init failed: ${(error as Error).message}`,
+      );
+      throw this.badRequest("auth.errors.firebaseOauthNotConfigured");
+    }
     return this.firebaseAuthClient;
   }
 

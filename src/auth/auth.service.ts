@@ -25,7 +25,9 @@ import {
 import { UserGoalEntity } from "../nutrition/entities/user-goal.entity";
 import { UserHealthConditionEntity } from "../nutrition/entities/user-health-condition.entity";
 import { UserNutritionalThresholdEntity } from "../nutrition/entities/user-nutritional-threshold.entity";
+import { percentMealSplits, validateMealSplits } from "../nutrition/meal-splits";
 import { NutritionCalculatorService } from "../nutrition/nutrition-calculator.service";
+import { UserContextService } from "../nutrition/user-context.service";
 import { UserThresholdBuilderService } from "../nutrition/user-threshold-builder.service";
 import { UserThresholdPersistenceService } from "../nutrition/user-threshold-persistence.service";
 import { AppUserEntity } from "./entities/app-user.entity";
@@ -73,6 +75,7 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   "auth.errors.profileIncomplete":
     "Complete your profile before changing goals",
   "validation.isDateString": "Value must be a valid ISO 8601 date string",
+  "users.errors.invalidMealSplits": "Meal split must add up to 100%.",
 };
 
 /**
@@ -110,6 +113,7 @@ export class AuthService {
     @InjectRepository(UserNutritionalThresholdEntity)
     private readonly thresholdRepo: Repository<UserNutritionalThresholdEntity>,
     private readonly weightService: WeightService,
+    private readonly userContextService: UserContextService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
@@ -414,10 +418,25 @@ export class AuthService {
       changed = true;
     }
 
+    let mealSplitsChanged = false;
+    if (dto.mealSplits !== undefined) {
+      if (dto.mealSplits === null) {
+        user.mealSplits = null;
+      } else {
+        const splits = validateMealSplits(dto.mealSplits);
+        if (!splits) throw this.unprocessable("users.errors.invalidMealSplits");
+        user.mealSplits = splits;
+      }
+      changed = true;
+      mealSplitsChanged = true;
+    }
+
     if (changed) {
       user.updatedAt = new Date();
       await this.appUserRepo.save(user);
     }
+    // Recipe context caches the split for 5 minutes; the next recipe must use the new one.
+    if (mealSplitsChanged) this.userContextService.invalidateUserCache(userId);
 
     return this.me(userId);
   }
@@ -1036,6 +1055,7 @@ export class AuthService {
       activityLevel: user.fitnessLevel,
       mealPlanningFrequency: user.dietType,
       barriers: user.allergies ?? [],
+      mealSplits: percentMealSplits(user.mealSplits),
     };
   }
 

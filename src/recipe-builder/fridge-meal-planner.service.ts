@@ -218,9 +218,11 @@ export class FridgeMealPlannerService {
     }
 
     const targetsBySlot = this.targetsForSlots(ctx, slotsToGenerate, remainingCalories);
+    // Meals without a target (0% of the user's day) get no staples: they are skipped below.
+    const plannedSlots = slotsToGenerate.filter((slot) => targetsBySlot.has(slot));
     const allocationResult = await this.stapleAllocationService.allocateStaplesForPlan({
       staples,
-      generatingSlots: slotsToGenerate,
+      generatingSlots: plannedSlots,
       ctx,
       slotTargets: targetsBySlot,
     });

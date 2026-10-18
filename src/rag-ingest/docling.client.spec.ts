@@ -386,7 +386,8 @@ describe('DoclingClient (async API)', () => {
     mockedAxios.post.mockResolvedValue(taskStatus('pending'));
     mockGets([taskStatus('success')], pdfResponse);
     const doc = await settle(client.convertPdf(Buffer.from('%PDF-1.4'), 'energy.pdf'));
-    expect(doc.title).toBe('energy.pdf');
+    // Same as the upload placeholder title (AdminRagDocumentsService): no ".pdf" suffix.
+    expect(doc.title).toBe('energy');
     const [url, form] = mockedAxios.post.mock.calls[0] as any[];
     expect(url).toBe('http://localhost:5001/v1/convert/file/async');
     expect(form).toBeInstanceOf(FormData);
@@ -394,6 +395,14 @@ describe('DoclingClient (async API)', () => {
     expect(form.get('image_export_mode')).toBe('embedded');
     expect(form.get('to_formats')).toBe('json');
     expect((form.get('files') as File).name).toBe('energy.pdf');
+  });
+
+  it('convertPdf: a PDF without a title item keeps the upload title (no ".pdf" appended after ingest)', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], { ...pdfResponse, document: { ...pdfResponse.document, json_content: { name: 'x', texts: [] } } });
+    const doc = await settle(client.convertPdf(Buffer.from('%PDF-1.4'), 'Hướng dẫn dinh dưỡng.PDF'));
+    expect(doc.title).toBe('Hướng dẫn dinh dưỡng');
+    expect((mockedAxios.post.mock.calls[0][1] as FormData).get('files')).toHaveProperty('name', 'Hướng dẫn dinh dưỡng.PDF');
   });
 
   it('honours DOCLING_URL and strips a trailing slash', async () => {

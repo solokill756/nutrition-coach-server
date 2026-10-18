@@ -297,7 +297,8 @@ export class DoclingClient {
     form.append('include_images', 'true');
     form.append('do_ocr', 'false');
     const data = await this.runTask('/v1/convert/file/async', form, false);
-    return mapDoclingDocument(this.jsonContent(data, false), filename);
+    // Fallback title matches the upload placeholder title, so it does not change to "<name>.pdf" after ingest.
+    return mapDoclingDocument(this.jsonContent(data, false), filename.replace(/\.pdf$/i, ''));
   }
 
   /** Submit an async job, poll until it finishes, return the result body. */

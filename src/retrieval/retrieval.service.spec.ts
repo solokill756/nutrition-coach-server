@@ -411,3 +411,23 @@ describe("RetrievalService query-embedding timeout", () => {
     expect(results.map((r) => r.id)).toContain("condition_lipids");
   });
 });
+
+describe("RetrievalService result format", () => {
+  it("returns the whole chunk with its page and block kind", () => {
+    const service = createService();
+    const content = "Nhóm: Nam 19–30 tuổi; Năng lượng: 2.500 kcal/ngày. ".repeat(40);
+    const result = (service as any).formatRetrievalResult(
+      {
+        id: "c1",
+        source: "s",
+        title: "Bảng 5",
+        content,
+        metadata: { domain: "guidelines", page_from: 12, block_kind: "table" },
+      },
+      0.8,
+    );
+    expect(result.content).toBe(content);
+    expect(result.page).toBe(12);
+    expect(result.blockKind).toBe("table");
+  });
+});

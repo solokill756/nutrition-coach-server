@@ -40,7 +40,49 @@ describe('chunker', () => {
     expect(chunks).toHaveLength(1);
     expect(chunks[0].headingPath).toBe('H1');
     expect(chunks[0].content).toContain('\n\n');
-    expect(countWords(chunks[0].content)).toBe(200);
+    // 200 body words + the two sub-section titles
+    expect(countWords(chunks[0].content)).toBe(202);
+    expect(chunks[0].content.startsWith('A\nw0 ')).toBe(true);
+    expect(chunks[0].content.indexOf('\n\nB\nv0 ')).toBeGreaterThan(0);
+  });
+
+  it('keeps merged-away top-level titles when merging into an empty headingPath', () => {
+    const chunks = chunkDocument(
+      doc([h(1, 'One'), p('alpha beta'), h(1, 'Two'), p('gamma delta')]),
+      new Map(),
+    );
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].headingPath).toBe('');
+    expect(chunks[0].content).toBe('One\nalpha beta\n\nTwo\ngamma delta');
+  });
+
+  it('(i) a 250-word piece and a 700-word piece under the same parent stay separate', () => {
+    const chunks = chunkDocument(
+      doc([h(1, 'H'), h(2, 'A'), p(words(250)), h(2, 'B'), p(words(700, 'v'))]),
+      new Map(),
+    );
+    expect(chunks).toHaveLength(2);
+    expect(chunks.map((c) => c.headingPath)).toEqual(['H › A', 'H › B']);
+  });
+
+  it('(ii) pieces of 100, 150 and 100 words under the same parent become one chunk', () => {
+    const chunks = chunkDocument(
+      doc([
+        h(1, 'H'),
+        h(2, 'A'),
+        p(words(100)),
+        h(2, 'B'),
+        p(words(150, 'v')),
+        h(2, 'C'),
+        p(words(100, 'x')),
+      ]),
+      new Map(),
+    );
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0].headingPath).toBe('H');
+    expect(countWords(chunks[0].content)).toBe(353);
+    expect(chunks[0].content.indexOf('A\n')).toBeLessThan(chunks[0].content.indexOf('\n\nB\n'));
+    expect(chunks[0].content.indexOf('\n\nB\n')).toBeLessThan(chunks[0].content.indexOf('\n\nC\n'));
   });
 
   it('does not merge across a table or across different parents', () => {

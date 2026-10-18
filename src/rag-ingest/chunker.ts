@@ -109,8 +109,25 @@ function pageRange(pages: number[]): { from: number | null; to: number | null } 
   return { from: Math.min(...pages), to: Math.max(...pages) };
 }
 
+/**
+ * Joins merged parts. A part whose own heading path is deeper than the merged
+ * path gets its remaining heading segment(s) as a first line, so the titles of
+ * merged-away sub-sections are not lost.
+ */
+function joinParts(parts: { path: string; text: string }[], mergedPath: string): string {
+  return parts
+    .map((part) => {
+      if (part.path === mergedPath) return part.text;
+      const rest =
+        mergedPath === '' ? part.path : part.path.slice(mergedPath.length + PATH_SEPARATOR.length);
+      return rest === '' ? part.text : `${rest}\n${part.text}`;
+    })
+    .join('\n\n');
+}
+
 function mergeSmallTextPieces(pieces: Piece[], min: number, max: number): Piece[] {
   const out: Piece[] = [];
+  const partsOf = new Map<Piece, { path: string; text: string }[]>();
   for (const piece of pieces) {
     const last = out[out.length - 1];
     if (
@@ -118,19 +135,29 @@ function mergeSmallTextPieces(pieces: Piece[], min: number, max: number): Piece[
       last.kind === 'text' &&
       piece.kind === 'text' &&
       last.words < min &&
-      last.parentPath === piece.parentPath &&
-      last.words + piece.words <= max
+      last.parentPath === piece.parentPath
     ) {
-      out[out.length - 1] = {
-        ...last,
-        path: last.path === piece.path ? last.path : last.parentPath,
-        text: `${last.text}\n\n${piece.text}`,
-        words: last.words + piece.words,
-        pages: [...last.pages, ...piece.pages],
-      };
-    } else {
-      out.push(piece);
+      const parts = [
+        ...(partsOf.get(last) ?? [{ path: last.path, text: last.text }]),
+        { path: piece.path, text: piece.text },
+      ];
+      const path = last.path === piece.path ? last.path : last.parentPath;
+      const text = joinParts(parts, path);
+      const words = countWords(text);
+      if (words <= max) {
+        const mergedPiece: Piece = {
+          ...last,
+          path,
+          text,
+          words,
+          pages: [...last.pages, ...piece.pages],
+        };
+        partsOf.set(mergedPiece, parts);
+        out[out.length - 1] = mergedPiece;
+        continue;
+      }
     }
+    out.push(piece);
   }
   return out;
 }

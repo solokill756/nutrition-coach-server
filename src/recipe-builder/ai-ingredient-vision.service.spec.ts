@@ -1,6 +1,7 @@
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import { AiIngredientVisionService } from "./ai-ingredient-vision.service";
+import { GeminiVisionClient } from "../ollama/gemini-vision.client";
 
 jest.mock("axios");
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -15,7 +16,7 @@ describe("AiIngredientVisionService", () => {
       return map[key];
     }),
   } as unknown as ConfigService;
-  const service = new AiIngredientVisionService(config);
+  const service = new AiIngredientVisionService(new GeminiVisionClient(config));
 
   beforeEach(() => {
     jest.clearAllMocks();

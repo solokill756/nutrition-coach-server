@@ -1,0 +1,16 @@
+# docling-serve for the RAG knowledge-base ingest pipeline.
+#   docker compose -f docker-compose.rag.yml up -d docling
+# The client (src/rag-ingest/docling.client.ts) points at DOCLING_URL
+# (default http://localhost:5001) and sends do_ocr=false on every request;
+# docling-serve v1.37.0 has no env var for a server-side OCR default.
+services:
+  docling:
+    image: quay.io/docling-project/docling-serve-cpu:v1.37.0
+    ports:
+      - "5001:5001"
+    mem_limit: 4g
+    environment:
+      # one uvicorn worker and one local conversion worker: models are loaded per worker
+      UVICORN_WORKERS: "1"
+      DOCLING_SERVE_ENG_LOC_NUM_WORKERS: "1"
+    restart: unless-stopped

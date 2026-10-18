@@ -65,6 +65,16 @@ describe("RagStoreService", () => {
     expect(sql).toContain("jsonb_set(metadata, '{domain}'");
   });
 
+  it("hasEmbedding checks rag_embeddings for the chunk id with a bound parameter", async () => {
+    const yes = makeStore(() => [], () => [{ found: 1 }]);
+    expect(await yes.store.hasEmbedding("c'1")).toBe(true);
+    expect(yes.plainCalls[0].sql).toMatch(/FROM .*rag_embeddings.*WHERE id = \$1/s);
+    expect(yes.plainCalls[0].sql).not.toContain("c'1");
+    expect(yes.plainCalls[0].params).toEqual(["c'1"]);
+    const no = makeStore(() => [], () => []);
+    expect(await no.store.hasEmbedding("c2")).toBe(false);
+  });
+
   it("getLatestJob returns null without rows and the newest job otherwise", async () => {
     const empty = makeStore(() => [], () => []);
     expect(await empty.store.getLatestJob("d")).toBeNull();

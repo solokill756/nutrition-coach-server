@@ -130,7 +130,7 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    | `RAG_EMBEDDING_MODEL` | `bge-m3` | Ollama model for RAG chunks and RAG queries |
    | `RAG_EMBEDDING_DIM` | `1024` | Must match `rag_embeddings.embedding` |
    | `FOOD_EMBEDDING_MODEL` | `nomic-embed-text` | Food semantic search model (unchanged) |
-   | `POSTGRES_SYNC_EMBEDDINGS_ON_BOOT` | `false` | The ingest worker owns RAG embeddings now |
+   | `POSTGRES_SYNC_EMBEDDINGS_ON_BOOT` | `false` | Ignored (a startup log line says so): the ingest worker owns RAG embeddings now |
    | `DOCLING_URL` | `http://localhost:5001` | docling-serve base URL |
    | `DOCLING_TIMEOUT_MS` | `3600000` | Deadline for one document conversion. Keep the compose `DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT` (seconds) at or below this value / 1000 |
    | `RAG_STORAGE_DIR` | `./storage/rag` | Uploaded PDFs and extracted images |

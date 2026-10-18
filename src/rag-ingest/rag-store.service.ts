@@ -518,6 +518,12 @@ export class RagStoreService {
     await this.writeEmbedding((sql, params) => this.dataSource.query(sql, params), chunkId, embedding, contentHash, model);
   }
 
+  /** True when the chunk has a rag_embeddings row (vector search can find it). */
+  async hasEmbedding(chunkId: string): Promise<boolean> {
+    const rows = rowsOf(await this.dataSource.query(`SELECT 1 AS found FROM ${this.embeddings} WHERE id = $1 LIMIT 1`, [chunkId]));
+    return rows.length > 0;
+  }
+
   // ------------------------------------------------------------ ingest result
 
   async applyIngestResult(

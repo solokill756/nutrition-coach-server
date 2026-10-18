@@ -73,24 +73,17 @@ export class RetrievalService implements OnModuleInit {
       console.log(`[RETRIEVAL] 📂 Indexed domains: ${this.getIndexedDomains().join(", ") || "(none)"}`);
       this.isIndexReady = true;
 
+      // No boot embedding sync for RAG: it re-embedded chunks with a different text and deleted
+      // the embeddings of inactive chunks. The ingest pipeline (and admin edits) own rag_embeddings.
       const syncEmbeddingsOnBoot = String(
         this.config.get<string>("POSTGRES_SYNC_EMBEDDINGS_ON_BOOT") || "false"
       ).toLowerCase() === "true";
-
       if (syncEmbeddingsOnBoot) {
-        const docsForEmbedding = this.index.docs.map((doc) => ({
-          id: doc.id,
-          text: `${doc.title} ${doc.content}`.substring(0, 2000),
-        }));
-        const syncStats = await this.vectorService.ensureEmbeddingsForDocuments(docsForEmbedding);
-        this.isVectorReady = this.vectorService.isServiceReady();
-        console.log(
-          `[RETRIEVAL]  Vector sync: +${syncStats.added}, ~${syncStats.updated}, -${syncStats.removed}, unchanged ${syncStats.skipped}, failed ${syncStats.failed}`
+        console.warn(
+          "[RETRIEVAL]  POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=true is ignored: the ingest pipeline owns RAG embeddings"
         );
-      } else {
-        this.isVectorReady = this.vectorService.isServiceReady();
-        console.log("[RETRIEVAL]  Skip vector sync on boot (POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=false)");
       }
+      this.isVectorReady = this.vectorService.isServiceReady();
 
       if (!this.isVectorReady && this.hybridMode !== "bm25-only") {
         console.warn("[RETRIEVAL]  Vector not ready; using BM25-only for retrieval until embeddings are available.");

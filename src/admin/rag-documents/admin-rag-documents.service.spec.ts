@@ -82,6 +82,7 @@ function setup() {
     getChunk: jest.fn().mockResolvedValue(chunk()),
     updateChunk: jest.fn().mockImplementation(async (_id: string, p: Record<string, unknown>) => chunk(p)),
     upsertEmbedding: jest.fn().mockResolvedValue(undefined),
+    hasEmbedding: jest.fn().mockResolvedValue(true),
   };
   const storage = {
     saveSourcePdf: jest.fn().mockResolvedValue("documents/d1/source.pdf"),
@@ -362,6 +363,37 @@ describe("AdminRagDocumentsService", () => {
       const t = setup();
       await t.service.updateChunk("d1-c1", { isActive: false });
       expect(t.store.updateChunk).toHaveBeenCalledWith("d1-c1", { isActive: false });
+      expect(t.retrieval.scheduleRebuild).toHaveBeenCalled();
+    });
+
+    it("re-enabling a chunk that has no rag_embeddings row embeds it with buildEmbeddingText", async () => {
+      const t = setup();
+      t.store.hasEmbedding.mockResolvedValue(false);
+      const res = await t.service.updateChunk("d1-c1", { isActive: true });
+      expect(t.store.updateChunk).toHaveBeenCalledWith("d1-c1", { isActive: true });
+      expect(t.store.hasEmbedding).toHaveBeenCalledWith("d1-c1");
+      expect(t.vector.embedDocuments).toHaveBeenCalledWith(["Doc title\nH1 > H2\nhello"]);
+      expect(t.store.upsertEmbedding).toHaveBeenCalledWith("d1-c1", [0.1, 0.2], expect.stringMatching(/^[0-9a-f]{64}$/), "bge-m3");
+      expect(t.retrieval.scheduleRebuild).toHaveBeenCalledTimes(1);
+      expect(res.data.isActive).toBe(true);
+    });
+
+    it("re-enabling a chunk that still has its embedding does not re-embed; disabling never embeds", async () => {
+      const t = setup();
+      await t.service.updateChunk("d1-c1", { isActive: true });
+      expect(t.store.hasEmbedding).toHaveBeenCalledWith("d1-c1");
+      expect(t.vector.embedDocuments).not.toHaveBeenCalled();
+      await t.service.updateChunk("d1-c1", { isActive: false });
+      expect(t.store.hasEmbedding).toHaveBeenCalledTimes(1);
+      expect(t.vector.embedDocuments).not.toHaveBeenCalled();
+    });
+
+    it("re-enabling keeps the save and returns 502 RAG_EMBEDDING_FAILED when the missing embedding cannot be built", async () => {
+      const t = setup();
+      t.store.hasEmbedding.mockResolvedValue(false);
+      t.vector.embedDocuments.mockRejectedValue(new Error("ollama down"));
+      expect(await codeOf(t.service.updateChunk("d1-c1", { isActive: true }))).toEqual({ code: "RAG_EMBEDDING_FAILED", status: 502 });
+      expect(t.store.updateChunk).toHaveBeenCalledTimes(1);
       expect(t.retrieval.scheduleRebuild).toHaveBeenCalled();
     });
 

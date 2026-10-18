@@ -249,9 +249,13 @@ export class AdminRagDocumentsService {
     const updated = await this.store.updateChunk(id, patch);
     if (!updated) throw new AdminRagException("RAG_CHUNK_NOT_FOUND", HttpStatus.NOT_FOUND);
 
-    if (content !== undefined) {
+    // Re-enabling a chunk whose embedding is missing (e.g. removed by the old boot sync) must also
+    // make it findable by vector search again.
+    const embedContent =
+      content ?? (body.isActive === true && !(await this.store.hasEmbedding(updated.id)) ? updated.content : undefined);
+    if (embedContent !== undefined) {
       try {
-        await this.reembed(updated, content);
+        await this.reembed(updated, embedContent);
       } catch (err) {
         this.logger.warn(`re-embedding chunk ${id} failed: ${describeError(err)}`);
         this.retrieval.scheduleRebuild();

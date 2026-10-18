@@ -57,6 +57,23 @@ const docRow = {
 };
 
 describe("RagStoreService", () => {
+  it("updateChunk with clearTagError strips metadata.tagError", async () => {
+    const { store, plainCalls } = makeStore(() => [], () => []);
+    await store.updateChunk("c1", { domain: "safety", clearTagError: true });
+    const sql = plainCalls[0].sql;
+    expect(sql).toContain("- 'tagError'");
+    expect(sql).toContain("jsonb_set(metadata, '{domain}'");
+  });
+
+  it("getLatestJob returns null without rows and the newest job otherwise", async () => {
+    const empty = makeStore(() => [], () => []);
+    expect(await empty.store.getLatestJob("d")).toBeNull();
+    const row = { id: 3, document_id: "d", status: "done", progress: 100, warnings: [], created_at: new Date() };
+    const found = makeStore(() => [], () => [row]);
+    expect((await found.store.getLatestJob("d"))?.id).toBe("3");
+    expect(found.plainCalls[0].sql).toContain("ORDER BY created_at DESC");
+  });
+
   it("claimNextJob uses FOR UPDATE SKIP LOCKED", async () => {
     const { store, txCalls } = makeStore((sql) => {
       if (/UPDATE .*rag_ingest_jobs/s.test(sql)) {

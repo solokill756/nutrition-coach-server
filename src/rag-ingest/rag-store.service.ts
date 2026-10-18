@@ -363,6 +363,15 @@ export class RagStoreService {
     return rows.length > 0;
   }
 
+  async getLatestJob(documentId: string): Promise<RagJobRow | null> {
+    const rows = rowsOf(
+      await this.dataSource.query(`SELECT * FROM ${this.jobs} WHERE document_id = $1 ORDER BY created_at DESC, id DESC LIMIT 1`, [
+        documentId,
+      ])
+    );
+    return rows[0] ? toJob(rows[0]) : null;
+  }
+
   async claimNextJob(): Promise<RagJobRow | null> {
     return this.dataSource.transaction(async (manager) => {
       const rows = rowsOf(
@@ -464,6 +473,8 @@ export class RagStoreService {
       needsReview?: boolean;
       tagScores?: Record<string, number>;
       tagger?: string;
+      /** Removes metadata.tagError (a successful re-tag clears the failure flag). */
+      clearTagError?: boolean;
     }
   ): Promise<RagChunkRow | null> {
     const sets: string[] = [];
@@ -491,6 +502,7 @@ export class RagStoreService {
     if (patch.tagger !== undefined) {
       metadataExpr = `jsonb_set(${metadataExpr}, '{tagger}', to_jsonb(${push(patch.tagger)}::text))`;
     }
+    if (patch.clearTagError) metadataExpr = `(${metadataExpr} - 'tagError')`;
     if (patch.tagScores !== undefined) sets.push(`tag_scores = ${push(JSON.stringify(patch.tagScores))}::jsonb`);
     if (patch.isActive !== undefined) sets.push(`is_active = ${push(patch.isActive)}`);
     if (patch.isManuallyEdited !== undefined) sets.push(`is_manually_edited = ${push(patch.isManuallyEdited)}`);

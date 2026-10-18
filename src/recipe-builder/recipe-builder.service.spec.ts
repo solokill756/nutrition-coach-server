@@ -100,6 +100,8 @@ function makeRecipeCtx(overrides: any = {}) {
       totalSaturatedFat: 0,
       totalCholesterol: 0,
       totalPotassium: 0,
+      totalFiber: 0,
+      totalPhosphorus: 0,
     },
     dailyTargetCalories: 2000,
     remaining: {
@@ -112,6 +114,8 @@ function makeRecipeCtx(overrides: any = {}) {
       saturatedFatG: 20,
       cholesterolMg: 300,
       potassiumMgMinRemaining: 0,
+      fiberGMinRemaining: null,
+      phosphorusMg: null,
     },
     ...overrides,
   };
@@ -518,5 +522,18 @@ describe("RecipeBuilderService meal targets and prompt", () => {
     );
     const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
     expect(user.content).toContain("Aim for ONE serving of this snack at about 200 kcal");
+  });
+
+  it("clampRecipeToRemainingBudgets scales for phosphorus", () => {
+    const { service } = createService();
+    const recipe: any = { ingredients: [{ amount_g: 100, amount: 1 }], nutritionPerServing: { calories: 100, phosphorusMg: 400 } };
+    const warnings: string[] = [];
+    expect((service as any).clampRecipeToRemainingBudgets(recipe, { phosphorusMg: 200 }, warnings)).toBe("adjusted");
+    expect(recipe.ingredients[0].amount_g).toBe(50);
+  });
+
+  it("verifyBudget warns when phosphorus still exceeds remaining", () => {
+    const { service } = createService();
+    expect((service as any).verifyBudget({ nutritionPerServing: { phosphorusMg: 400 } }, { phosphorusMg: 200 }, [])).toBe("warning");
   });
 });

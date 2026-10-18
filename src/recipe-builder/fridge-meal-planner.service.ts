@@ -1,4 +1,4 @@
-﻿import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from "@nestjs/common";
+import { BadRequestException, HttpException, HttpStatus, Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { Cron, CronExpression } from "@nestjs/schedule";
 import { InjectRepository } from "@nestjs/typeorm";
@@ -169,6 +169,7 @@ export class FridgeMealPlannerService {
       userId,
       dateKey,
       "breakfast",
+      tzOffsetMinutes,
     );
     const loggedSlots = await this.loggedMealSlots(userId, dateKey, tzOffsetMinutes);
     const existingBySlot = await this.generatedRecipeRowsBySlot(userId, dateKey);
@@ -246,6 +247,7 @@ export class FridgeMealPlannerService {
       }
       slots.push(await this.generateSlot(userId, dateKey, mealSlot, staples, {
         ...options,
+        tzOffsetMinutes,
         target,
         selectedFoodIds: allocations[mealSlot] ?? [],
       }));
@@ -269,6 +271,7 @@ export class FridgeMealPlannerService {
         userId,
         dateKey,
         mealSlot,
+        tzOffsetMinutes,
       );
       const loggedSlots = await this.loggedMealSlots(userId, dateKey, tzOffsetMinutes);
       if (loggedSlots.has(mealSlot)) {
@@ -315,6 +318,7 @@ export class FridgeMealPlannerService {
       }
       return await this.generateSlot(userId, dateKey, mealSlot, staples, {
         replace: true,
+        tzOffsetMinutes,
         target,
         selectedFoodIds: allocationResult.allocations[mealSlot] ?? [],
       });
@@ -350,7 +354,12 @@ export class FridgeMealPlannerService {
     dateKey: string,
     mealSlot: RecipeMealSlot,
     staples: FoodNutritionEntity[],
-    options: { replace?: boolean; target?: MealNutritionTarget; selectedFoodIds: number[] },
+    options: {
+      replace?: boolean;
+      target?: MealNutritionTarget;
+      selectedFoodIds: number[];
+      tzOffsetMinutes?: number;
+    },
   ): Promise<FridgeSlotResult> {
     if (!options.replace) {
       const existing = await this.recipeBuilderService.findGeneratedRecipe(
@@ -380,6 +389,7 @@ export class FridgeMealPlannerService {
       userId,
       dateKey,
       mealSlot,
+      options.tzOffsetMinutes ?? 0,
     );
     const target = options.target ?? slotTarget(ctx, mealSlot);
     const selectedFoods = options.selectedFoodIds

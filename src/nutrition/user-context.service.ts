@@ -1,13 +1,12 @@
 import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Repository, MoreThanOrEqual, In } from "typeorm";
+import { Repository, MoreThanOrEqual, In, Between } from "typeorm";
 import { UserGoalEntity } from "./entities/user-goal.entity";
 import { UserHealthConditionEntity } from "./entities/user-health-condition.entity";
 import {
   UserNutritionalThresholdEntity,
 } from "./entities/user-nutritional-threshold.entity";
-import { DailyNutritionSummaryEntity } from "./entities/daily-nutrition-summary.entity";
 import { LogFoodEntity } from "./entities/log-food.entity";
 import { AppUserEntity } from "../auth/entities/app-user.entity";
 import { FoodNutritionEntity } from "../meal-planning/entities/food-nutrition.entity";
@@ -16,7 +15,8 @@ import { ConditionNutrientRuleEntity } from "./entities/condition-nutrient-rule.
 import { ConditionNutrientRuleApplierService } from "./condition-nutrient-rule-applier.service";
 import { ConditionNutrientUnitService } from "./condition-nutrient-unit.service";
 import { buildConditionRelatedThresholds } from "./condition-related-thresholds";
-import { localDateKeyNow } from "../common/date/calendar-day-bounds";
+import { calendarDayBounds, localDateKeyNow } from "../common/date/calendar-day-bounds";
+import { sumDayIntake, type DayIntakeTotals } from "./day-intake-totals";
 import { resolveMealSplits, type MealSplitsFraction } from "./meal-splits";
 
 export type RecipeGenerationMealSlot = "breakfast" | "lunch" | "dinner" | "snack";
@@ -100,17 +100,7 @@ export interface RecipeGenerationContext {
     loggedAt: Date;
     mealType: string;
   }>;
-  todayIntake: {
-    totalCalories: number;
-    totalProtein: number;
-    totalCarbs: number;
-    totalFat: number;
-    totalSodium: number;
-    totalSugar: number;
-    totalSaturatedFat: number;
-    totalCholesterol: number;
-    totalPotassium: number;
-  };
+  todayIntake: DayIntakeTotals;
   dailyTargetCalories: number | null;
   /** The user's share of the day per meal (fractions); missing = MEAL_SPLITS. */
   mealSplits?: MealSplitsFraction;
@@ -124,6 +114,8 @@ export interface RecipeGenerationContext {
     saturatedFatG: number | null;
     cholesterolMg: number | null;
     potassiumMgMinRemaining: number | null;
+    fiberGMinRemaining: number | null;
+    phosphorusMg: number | null;
   };
 }
 
@@ -134,17 +126,7 @@ export interface UserMealContext {
   healthConditions: string[];
   thresholds: UserNutrientThreshold[];
   recentHistory: UserFoodHistoryEntry[];
-  todaySummary: {
-    totalCalories: number;
-    totalSodium: number;
-    totalCarbs: number;
-    totalProtein: number;
-    totalFat: number;
-    totalSugar: number;
-    totalSaturatedFat: number;
-    totalCholesterol: number;
-    totalPotassium: number;
-  } | null;
+  todaySummary: DayIntakeTotals;
 }
 
 @Injectable()
@@ -166,8 +148,6 @@ export class UserContextService {
     private readonly healthRepo: Repository<UserHealthConditionEntity>,
     @InjectRepository(UserNutritionalThresholdEntity)
     private readonly thresholdRepo: Repository<UserNutritionalThresholdEntity>,
-    @InjectRepository(DailyNutritionSummaryEntity)
-    private readonly summaryRepo: Repository<DailyNutritionSummaryEntity>,
     @InjectRepository(LogFoodEntity)
     private readonly logRepo: Repository<LogFoodEntity>,
     @InjectRepository(AppUserEntity)
@@ -326,6 +306,7 @@ export class UserContextService {
     userId: number,
     dateKey: string,
     mealSlot: RecipeGenerationMealSlot,
+    tzOffsetMinutes = 0,
   ): Promise<RecipeGenerationContext> {
     const key = String(dateKey || "").trim().slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) {
@@ -336,14 +317,15 @@ export class UserContextService {
     logSince.setDate(logSince.getDate() - this.logHistoryDays);
 
     // Static context (cached) + dynamic data fetched in parallel
-    const [staticCtx, logRows, summary] = await Promise.all([
+    const { start, end } = calendarDayBounds(key, tzOffsetMinutes);
+    const [staticCtx, logRows, todayRows] = await Promise.all([
       this.loadStaticContext(userId),
       this.logRepo.find({
         where: { userId, delFlag: false, loggedAt: MoreThanOrEqual(logSince) },
         order: { loggedAt: "DESC", id: "DESC" },
         take: 50,
       }),
-      this.summaryRepo.findOne({ where: { userId, date: key } }),
+      this.logRepo.find({ where: { userId, delFlag: false, loggedAt: Between(start, end) } }),
     ]);
 
     const recipeLogRows = logRows.filter((r) => r.recipeId != null && Number(r.recipeId) > 0);
@@ -361,23 +343,7 @@ export class UserContextService {
       mealType: UserContextService.mealIntToSlug(r.meal),
     }));
 
-    const todayIntake = summary
-      ? {
-          totalCalories: Number(summary.totalCalories) || 0,
-          totalProtein: Number(summary.totalProtein) || 0,
-          totalCarbs: Number(summary.totalCarbs) || 0,
-          totalFat: Number(summary.totalFat) || 0,
-          totalSodium: Number(summary.totalSodium) || 0,
-          totalSugar: Number(summary.totalSugar) || 0,
-          totalSaturatedFat: Number(summary.totalSaturatedFat) || 0,
-          totalCholesterol: Number(summary.totalCholesterol) || 0,
-          totalPotassium: Number(summary.totalPotassium) || 0,
-        }
-      : {
-          totalCalories: 0, totalProtein: 0, totalCarbs: 0, totalFat: 0,
-          totalSodium: 0, totalSugar: 0, totalSaturatedFat: 0,
-          totalCholesterol: 0, totalPotassium: 0,
-        };
+    const todayIntake = sumDayIntake(todayRows);
 
     const { thresholds, dailyTargetCalories } = staticCtx;
     const sodiumLimit = this.getThresholdMax(thresholds, "sodium");
@@ -388,6 +354,8 @@ export class UserContextService {
     const saturatedFatLimit = this.getThresholdMax(thresholds, "saturatedfat");
     const cholesterolLimit = this.getThresholdMax(thresholds, "cholesterol");
     const potassiumMin = this.getThresholdMin(thresholds, "potassium");
+    const fiberMin = this.getThresholdMin(thresholds, "fiber");
+    const phosphorusLimit = this.getThresholdMax(thresholds, "phosphorus");
 
     return {
       userId,
@@ -414,6 +382,8 @@ export class UserContextService {
         saturatedFatG: saturatedFatLimit != null ? Math.max(0, saturatedFatLimit - todayIntake.totalSaturatedFat) : null,
         cholesterolMg: cholesterolLimit != null ? Math.max(0, cholesterolLimit - todayIntake.totalCholesterol) : null,
         potassiumMgMinRemaining: potassiumMin != null ? Math.max(0, potassiumMin - todayIntake.totalPotassium) : null,
+        fiberGMinRemaining: fiberMin != null ? Math.max(0, fiberMin - todayIntake.totalFiber) : null,
+        phosphorusMg: phosphorusLimit != null ? Math.max(0, phosphorusLimit - todayIntake.totalPhosphorus) : null,
       },
     };
   }
@@ -445,10 +415,11 @@ export class UserContextService {
 
     const today = localDateKeyNow(tzOffsetMinutes);
 
-    // Static context (cached) + today's summary fetched in parallel
-    const [staticCtx, summary] = await Promise.all([
+    const { start, end } = calendarDayBounds(today, tzOffsetMinutes);
+    // Static context (cached) + today's log rows fetched in parallel
+    const [staticCtx, todayRows] = await Promise.all([
       this.loadStaticContext(userId),
-      this.summaryRepo.findOne({ where: { userId, date: today } }),
+      this.logRepo.find({ where: { userId, delFlag: false, loggedAt: Between(start, end) } }),
     ]);
 
     this.logger.log(
@@ -463,19 +434,7 @@ export class UserContextService {
       healthConditions: staticCtx.healthConditions,
       thresholds: staticCtx.thresholds,
       recentHistory: [],
-      todaySummary: summary
-        ? {
-            totalCalories: summary.totalCalories,
-            totalSodium: summary.totalSodium,
-            totalCarbs: summary.totalCarbs,
-            totalProtein: summary.totalProtein,
-            totalFat: summary.totalFat,
-            totalSugar: summary.totalSugar,
-            totalSaturatedFat: summary.totalSaturatedFat,
-            totalCholesterol: summary.totalCholesterol,
-            totalPotassium: summary.totalPotassium,
-          }
-        : null,
+      todaySummary: sumDayIntake(todayRows),
     };
   }
 }

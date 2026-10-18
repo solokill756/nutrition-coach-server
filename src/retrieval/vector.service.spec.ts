@@ -41,11 +41,54 @@ describe("VectorService", () => {
     expect(service.cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1, 5);
   });
 
+  const okJson = (body: unknown) => ({ ok: true, json: async () => body }) as any;
+
+  it("getQueryEmbedding keeps Vietnamese diacritics and uses the RAG model", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1, 0.2]] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    await service.getQueryEmbedding("  Người tiểu đường ");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/embed$/),
+      expect.objectContaining({ body: JSON.stringify({ model: "bge-m3", input: ["Người tiểu đường"] }) }),
+    );
+  });
+
+  it("embedDocuments batches by 8 sequentially and preserves order", async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    fetchMock.mockImplementation(async (_url: string, init: any) => {
+      inFlight++;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      const input: string[] = JSON.parse(init.body).input;
+      return okJson({ embeddings: input.map((t) => [Number(t.replace("t", ""))]) });
+    });
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    const texts = Array.from({ length: 10 }, (_, i) => `t${i}`);
+    const out = await service.embedDocuments(texts);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).input).toHaveLength(8);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).input).toHaveLength(2);
+    expect(maxInFlight).toBe(1);
+    expect(out).toEqual(texts.map((_, i) => [i]));
+  });
+
+  it("getFoodQueryEmbedding keeps the old normalization and model", async () => {
+    fetchMock.mockResolvedValue(okJson({ embedding: [0.5, 0.6] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    const out = await service.getFoodQueryEmbedding("Người tiểu đường");
+    expect(out).toEqual([0.5, 0.6]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/embeddings$/),
+      expect.objectContaining({
+        body: JSON.stringify({ model: "nomic-embed-text", prompt: "nguoi tieu duong", stream: false }),
+      }),
+    );
+  });
+
   it("getQueryEmbedding caches results", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ embedding: [1, 2, 3] }),
-    } as any);
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[1, 2, 3]] }));
     const service = new VectorService(createConfig(false), createPostgres(false));
     const a = await service.getQueryEmbedding("hello");
     const b = await service.getQueryEmbedding("hello");
@@ -55,10 +98,7 @@ describe("VectorService", () => {
   });
 
   it("vectorSearch works in memory mode", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ embedding: [1, 0] }),
-    } as any);
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[1, 0]] }));
     const service = new VectorService(createConfig(false), createPostgres(false));
     await service.onModuleInit();
     await service.embedDocument("doc a", "a");
@@ -76,10 +116,7 @@ describe("VectorService", () => {
   });
 
   it("clearEmbeddings resets internal state", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ embedding: [1, 0] }),
-    } as any);
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[1, 0]] }));
     const service = new VectorService(createConfig(false), createPostgres(false));
     await service.embedDocument("doc a", "a");
     await service.clearEmbeddings();

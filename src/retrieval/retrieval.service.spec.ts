@@ -87,15 +87,117 @@ function createService(): RetrievalService {
     },
   ];
 
-  (service as any).docs = docs;
+  (service as any).index = (service as any).buildIndex(docs);
   (service as any).isIndexReady = true;
   (service as any).isVectorReady = false;
   (service as any).hybridMode = "bm25-only";
-  (service as any).buildDomainDocIdMap();
-  (service as any).buildIndices();
 
   return service;
 }
+
+function rebuildConfig(): ConfigService {
+  return {
+    get: jest.fn((key: string) => {
+      if (key === "RETRIEVAL_QUERY_EXPANSION_ENABLED") return "false";
+      if (key === "USE_POSTGRES_STORAGE") return "true";
+      return undefined;
+    }),
+  } as unknown as ConfigService;
+}
+
+function chunk(id: string, content: string) {
+  return { id, source: "s", title: `Title ${id}`, content, metadata: { domain: "guidelines" } };
+}
+
+function rebuildService(loadCorpus: jest.Mock): RetrievalService {
+  const postgres = {
+    isEnabled: jest.fn(() => true),
+    ensureSchema: jest.fn().mockResolvedValue(undefined),
+    loadCorpus,
+  } as unknown as PostgresRagService;
+  return new RetrievalService(
+    rebuildConfig(),
+    vectorService(),
+    postgres,
+    { chat: jest.fn() } as unknown as OllamaService,
+  );
+}
+
+describe("RetrievalService hot rebuild", () => {
+  beforeEach(() => {
+    jest.spyOn(console, "log").mockImplementation(() => undefined);
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    jest.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it("starts with an empty corpus without throwing and retrieve returns []", async () => {
+    const service = rebuildService(jest.fn().mockResolvedValue({ docs: [] }));
+    await expect(service.onModuleInit()).resolves.toBeUndefined();
+    await expect(service.retrieve("salt", 5, {}, "bm25-only")).resolves.toEqual([]);
+  });
+
+  it("serves results from the old index while rebuildIndex is running", async () => {
+    let resolveSecond!: (v: unknown) => void;
+    const loadCorpus = jest
+      .fn()
+      .mockResolvedValueOnce({ docs: [chunk("old", "salt intake guideline")] })
+      .mockReturnValueOnce(new Promise((r) => (resolveSecond = r)));
+    const service = rebuildService(loadCorpus);
+    await service.rebuildIndex();
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["old"]);
+
+    const pending = service.rebuildIndex();
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["old"]);
+
+    resolveSecond({ docs: [chunk("new", "salt reduction advice")] });
+    await pending;
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["new"]);
+  });
+
+  it("keeps the old index when a rebuild fails", async () => {
+    const loadCorpus = jest
+      .fn()
+      .mockResolvedValueOnce({ docs: [chunk("old", "salt intake guideline")] })
+      .mockRejectedValueOnce(new Error("db down"));
+    const service = rebuildService(loadCorpus);
+    await service.rebuildIndex();
+    await expect(service.rebuildIndex()).resolves.toBeUndefined();
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["old"]);
+  });
+
+  it("runs one more rebuild after a concurrent request instead of two in parallel", async () => {
+    let resolveFirst!: (v: unknown) => void;
+    const loadCorpus = jest
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce({ docs: [chunk("second", "salt second")] });
+    const service = rebuildService(loadCorpus);
+    const a = service.rebuildIndex();
+    const b = service.rebuildIndex();
+    await new Promise((r) => setImmediate(r));
+    expect(loadCorpus).toHaveBeenCalledTimes(1);
+    resolveFirst({ docs: [chunk("first", "salt first")] });
+    await Promise.all([a, b]);
+    expect(loadCorpus).toHaveBeenCalledTimes(2);
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["second"]);
+  });
+
+  it("scheduleRebuild debounces multiple calls into one rebuild", async () => {
+    jest.useFakeTimers();
+    const loadCorpus = jest.fn().mockResolvedValue({ docs: [chunk("a", "salt")] });
+    const service = rebuildService(loadCorpus);
+    service.scheduleRebuild();
+    service.scheduleRebuild();
+    service.scheduleRebuild();
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(loadCorpus).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("RetrievalService entity filters", () => {
   beforeEach(() => {

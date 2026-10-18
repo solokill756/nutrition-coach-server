@@ -23,11 +23,14 @@ type QueryEmbeddingCache = {
   cachedAt: number;
 };
 
+const EMBED_BATCH_SIZE = 8;
+
 @Injectable()
 export class VectorService implements OnModuleInit {
   // Configuration
-  private model = "nomic-embed-text"; // Lightweight + Vietnamese support
-  private embeddingDim = 768; // nomic-embed-text dimension is 768
+  private model = "bge-m3"; // RAG embedding model (RAG_EMBEDDING_MODEL)
+  private embeddingDim = 1024; // RAG_EMBEDDING_DIM
+  private foodModel = "nomic-embed-text"; // FOOD_EMBEDDING_MODEL (food search only)
   private ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
   private cacheDir = ".vector-cache";
   private cacheFile = "embeddings_cache.json";
@@ -47,7 +50,11 @@ export class VectorService implements OnModuleInit {
   constructor(
     private readonly config: ConfigService,
     private readonly postgresRagService: PostgresRagService
-  ) {}
+  ) {
+    this.model = this.config.get<string>("RAG_EMBEDDING_MODEL") || this.model;
+    this.embeddingDim = Number(this.config.get<string>("RAG_EMBEDDING_DIM")) || this.embeddingDim;
+    this.foodModel = this.config.get<string>("FOOD_EMBEDDING_MODEL") || this.foodModel;
+  }
 
   async onModuleInit() {
     try {
@@ -292,17 +299,18 @@ export class VectorService implements OnModuleInit {
    * Get embedding for a query (with short TTL cache)
    */
   async getQueryEmbedding(query: string): Promise<number[]> {
+    const text = this.normalizeForRag(query);
     // Check query cache (TTL: 5 minutes)
-    const cached = this.queryCache.get(query);
+    const cached = this.queryCache.get(text);
     if (cached && Date.now() - cached.cachedAt < this.queryTTL) {
       return cached.embedding;
     }
 
     // Generate and cache
     try {
-      const embedding = await this.generateEmbedding(query);
-      this.queryCache.set(query, {
-        query,
+      const embedding = await this.generateEmbedding(text);
+      this.queryCache.set(text, {
+        query: text,
         embedding,
         cachedAt: Date.now()
       });
@@ -321,7 +329,7 @@ export class VectorService implements OnModuleInit {
    * Get embedding for a batch of texts
    */
   async getEmbeddingsBatch(texts: string[]): Promise<number[][]> {
-    return Promise.all(texts.map((text) => this.generateEmbedding(text)));
+    return this.embedDocuments(texts);
   }
 
   /**
@@ -451,15 +459,64 @@ export class VectorService implements OnModuleInit {
    * Generate embedding via Ollama API
    */
   private async generateEmbedding(text: string): Promise<number[]> {
-    const sanitizedText = this.normalizeForEmbedding(text).substring(0, 2000).trim(); // Limit text length
+    const [embedding] = await this.embedDocuments([text]);
+    return embedding;
+  }
+
+  /**
+   * Embed RAG texts in sequential batches (bge-m3 via Ollama /api/embed).
+   * Text is only NFC-normalized and trimmed: diacritics and case are kept.
+   */
+  async embedDocuments(texts: string[]): Promise<number[][]> {
+    const out: number[][] = [];
+    for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+      const input = texts.slice(i, i + EMBED_BATCH_SIZE).map((t) => this.normalizeForRag(t));
+      out.push(...(await this.requestEmbedBatch(input)));
+    }
+    return out;
+  }
+
+  private normalizeForRag(value: string): string {
+    return String(value ?? "").normalize("NFC").trim();
+  }
+
+  private async requestEmbedBatch(input: string[]): Promise<number[][]> {
+    try {
+      const response = await fetch(`${this.ollamaBaseUrl}/api/embed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: this.model, input })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Ollama API error: ${response.status} ${response.statusText}`);
+      }
+
+      const data = await response.json() as { embeddings: number[][] };
+      if (!Array.isArray(data.embeddings) || data.embeddings.length !== input.length) {
+        throw new Error("Invalid embedding response format");
+      }
+      return data.embeddings;
+    } catch (error) {
+      console.error("[VECTOR] ❌ Ollama embedding error:", error);
+      throw new Error(`Failed to generate embedding: ${error}`);
+    }
+  }
+
+  /**
+   * Embedding for food search: separate model, legacy single-prompt endpoint,
+   * ASCII-folded text (matches how food_embeddings were generated).
+   */
+  async getFoodQueryEmbedding(query: string): Promise<number[]> {
+    const prompt = this.normalizeForEmbedding(query).substring(0, 2000).trim();
 
     try {
       const response = await fetch(`${this.ollamaBaseUrl}/api/embeddings`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          model: this.model,
-          prompt: sanitizedText,
+          model: this.foodModel,
+          prompt,
           stream: false
         })
       });

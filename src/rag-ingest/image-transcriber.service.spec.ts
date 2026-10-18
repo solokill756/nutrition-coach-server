@@ -66,6 +66,27 @@ describe('RAG_INGEST_PROMPTS.IMAGE_TRANSCRIBE', () => {
     expect(p).toContain('Fig 1');
     expect(p).toContain('around text');
   });
+
+  it('asks for [unclear] instead of guessing, and never completing or estimating a number', () => {
+    const p = RAG_INGEST_PROMPTS.IMAGE_TRANSCRIBE();
+    expect(p).toContain('[unclear]');
+    expect(p).toMatch(/never complete or estimate a number/i);
+  });
+
+  it('asks for every table, panel and inset to be transcribed completely', () => {
+    const p = RAG_INGEST_PROMPTS.IMAGE_TRANSCRIBE();
+    expect(p).toMatch(/every table, panel and inset/i);
+    expect(p).toMatch(/never summari[sz]e or skip a sub-table/i);
+  });
+
+  it('fences the surrounding text and forbids copying numbers that appear only in the context', () => {
+    const p = RAG_INGEST_PROMPTS.IMAGE_TRANSCRIBE('Fig 1', 'Rice 55 g per serving');
+    expect(p).toContain('<context>\nRice 55 g per serving\n</context>');
+    expect(p).toMatch(/context only/i);
+    expect(p).toMatch(/numbers that appear only in the context must never be copied/i);
+    // Without context there is no fence.
+    expect(RAG_INGEST_PROMPTS.IMAGE_TRANSCRIBE('Fig 1')).not.toContain('<context>');
+  });
 });
 
 describe('ImageTranscriberService', () => {

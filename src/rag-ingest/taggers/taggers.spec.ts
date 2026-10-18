@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import axios from "axios";
 import { RAG_TAXONOMY } from "../rag-taxonomy";
 import { emptyTags } from "../rag-taxonomy";
@@ -91,6 +92,29 @@ describe("JevTagger", () => {
     expect(axiosPost).toHaveBeenCalledTimes(1);
   });
 
+  it("does not leak the API key in thrown errors, and keeps the status", async () => {
+    const t = new JevTagger(cfg({ TYPESAFE_API_KEY: "SECRET-KEY-123" }));
+    jest.spyOn(t as any, "sleep").mockResolvedValue(undefined);
+    const axiosErr = Object.assign(new Error("Request failed with status code 401"), {
+      response: { status: 401 },
+      config: { headers: { Authorization: "Bearer SECRET-KEY-123" } },
+    });
+    axiosPost.mockRejectedValue(axiosErr);
+    const thrown = await t.tag("text").catch((e) => e);
+    expect(thrown.message).toBe("Jev request failed (status 401)");
+    expect(thrown.status).toBe(401);
+    expect(thrown.message).not.toContain("SECRET-KEY-123");
+    expect(JSON.stringify(thrown)).not.toContain("SECRET-KEY-123");
+    expect(String(thrown.stack)).not.toContain("SECRET-KEY-123");
+  });
+
+  it("retries a 5xx", async () => {
+    axiosPost.mockRejectedValueOnce({ response: { status: 503 } }).mockResolvedValueOnce(okBody);
+    const r = await tagger.tag("text");
+    expect(axiosPost).toHaveBeenCalledTimes(2);
+    expect(r.tagger).toBe("jev");
+  });
+
   it("fails when the domain answer is missing or invalid", async () => {
     axiosPost.mockResolvedValue({ data: { answers: { conditions__diabetes: { type: "noul", noul: 1 } } } });
     await expect(tagger.tag("text")).rejects.toThrow(/domain/);
@@ -163,6 +187,31 @@ describe("TaggingService", () => {
     expect(gemini.tag).toHaveBeenCalledTimes(3);
     expect(results.map((r) => r?.tagger)).toEqual(["gemini", "jev", "gemini", "jev", "gemini", "jev"]);
     expect(warnings).toEqual([]);
+  });
+
+  it("logs sanitized warnings per failure and adds the HTTP status to the switch warning", async () => {
+    const warn = jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const axiosErr = Object.assign(new Error("Request failed with status code 401"), {
+      response: { status: 401 },
+      config: { headers: { Authorization: "Bearer SECRET-KEY-123" } },
+    });
+    const { svc } = mk(
+      async () => {
+        throw axiosErr;
+      },
+      async () => {
+        throw axiosErr;
+      },
+    );
+    const { results, warnings } = await svc.tagAll(["a", "b", "c", "d"]);
+    expect(results).toEqual([null, null, null, null]);
+    expect(warnings[0]).toContain("switched to Gemini tagger at chunk 3 (last Jev error: HTTP 401)");
+    const logged = warn.mock.calls.map((c) => c.map(String).join(" "));
+    expect(logged).toContain("jev failed on chunk 1: HTTP 401");
+    expect(logged).toContain("gemini failed on chunk 4: HTTP 401");
+    expect(logged.length).toBe(3 + 4); // 3 jev failures + 4 gemini failures
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("SECRET-KEY-123");
+    warn.mockRestore();
   });
 
   it("returns null when both taggers fail for a chunk", async () => {

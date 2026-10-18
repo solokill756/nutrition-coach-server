@@ -13,6 +13,13 @@ const REQUEST_TIMEOUT_MS = 60_000;
 
 type Json = Record<string, any>;
 
+export class JevRequestError extends Error {
+  constructor(public readonly status?: number) {
+    super(`Jev request failed (status ${status ?? "network"})`);
+    this.name = "JevRequestError";
+  }
+}
+
 @Injectable()
 export class JevTagger implements RagTagger {
   readonly name = "jev" as const;
@@ -60,7 +67,8 @@ export class JevTagger implements RagTagger {
       } catch (err) {
         const status = (err as { response?: { status?: number } }).response?.status;
         const retryable = status === undefined || status === 429 || status >= 500;
-        if (!retryable || attempt >= BACKOFF_MS.length) throw err;
+        // Never rethrow the raw axios error: it carries config.headers.Authorization.
+        if (!retryable || attempt >= BACKOFF_MS.length) throw new JevRequestError(status);
         await this.sleep(BACKOFF_MS[attempt]);
       }
     }

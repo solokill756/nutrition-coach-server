@@ -5,11 +5,11 @@ import { VectorService } from "./vector.service";
 import { PostgresRagService } from "./postgres-rag.service";
 import { OllamaService } from "../ollama/ollama.service";
 
-function config(): ConfigService {
+function config(extra: Record<string, string> = {}): ConfigService {
   return {
     get: jest.fn((key: string) => {
       if (key === "RETRIEVAL_QUERY_EXPANSION_ENABLED") return "false";
-      return undefined;
+      return extra[key];
     }),
   } as unknown as ConfigService;
 }
@@ -26,10 +26,10 @@ function vectorService(): VectorService {
   } as unknown as VectorService;
 }
 
-function createService(): RetrievalService {
+function createService(extraConfig: Record<string, string> = {}, vector: VectorService = vectorService()): RetrievalService {
   const service = new RetrievalService(
-    config(),
-    vectorService(),
+    config(extraConfig),
+    vector,
     {} as PostgresRagService,
     { chat: jest.fn() } as unknown as OllamaService,
   );
@@ -313,4 +313,79 @@ describe("RetrievalService entity filters", () => {
     expect(results.some((r) => r.domain === "conditions")).toBe(true);
   });
 
+});
+
+describe("RetrievalService query-embedding timeout", () => {
+  beforeEach(() => {
+    jest.spyOn(console, "log").mockImplementation(() => undefined);
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    jest.spyOn(console, "error").mockImplementation(() => undefined);
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  /** Hybrid service whose query embedding never resolves (Ollama busy with an ingest job). */
+  function hungHybridService(extraConfig: Record<string, string> = {}) {
+    const signals: AbortSignal[] = [];
+    const vector = vectorService();
+    const getQueryEmbedding = jest.fn((_q: string, signal?: AbortSignal) => {
+      if (signal) signals.push(signal);
+      return new Promise<number[]>(() => undefined);
+    });
+    (vector as any).getQueryEmbedding = getQueryEmbedding;
+    const service = createService({ RETRIEVAL_CROSS_ENCODER_LITE_ENABLED: "false", ...extraConfig }, vector);
+    (service as any).isVectorReady = true;
+    (service as any).hybridMode = "hybrid";
+    return { service, getQueryEmbedding, signals, vector };
+  }
+
+  async function retrieveTimed(service: RetrievalService, question: string) {
+    let settled = false;
+    const p = service.retrieve(question, 5, { intent: "condition_specific" }).then((r) => {
+      settled = true;
+      return r;
+    });
+    return { p, isSettled: () => settled };
+  }
+
+  it("returns BM25 results within the default 3000 ms when the query embedding hangs", async () => {
+    const { service, getQueryEmbedding, signals, vector } = hungHybridService();
+    const run = await retrieveTimed(service, "cholesterol LDL triglyceride");
+    await jest.advanceTimersByTimeAsync(2999);
+    expect(run.isSettled()).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(run.isSettled()).toBe(true);
+    const results = await run.p;
+    expect(results.map((r) => r.id)).toContain("condition_lipids");
+    // One timeout per request: the re-rank step does not wait for a second hung embedding.
+    expect(getQueryEmbedding).toHaveBeenCalledTimes(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(vector.vectorSearch).not.toHaveBeenCalled();
+  });
+
+  it("honours RAG_QUERY_EMBED_TIMEOUT_MS", async () => {
+    const { service } = hungHybridService({ RAG_QUERY_EMBED_TIMEOUT_MS: "500" });
+    const run = await retrieveTimed(service, "cholesterol LDL triglyceride");
+    await jest.advanceTimersByTimeAsync(500);
+    expect(run.isSettled()).toBe(true);
+    expect((await run.p).map((r) => r.id)).toContain("condition_lipids");
+  });
+
+  it("re-ranks without semantic scores instead of returning [] when only the re-rank embedding fails", async () => {
+    const vector = vectorService();
+    (vector as any).vectorSearchAll = jest.fn(async () => [{ docId: "condition_lipids", score: 0.9 }]);
+    (vector as any).getQueryEmbedding = jest
+      .fn()
+      .mockResolvedValueOnce([1, 0])
+      .mockRejectedValueOnce(new Error("ollama busy"));
+    const service = createService({ RETRIEVAL_CROSS_ENCODER_LITE_ENABLED: "false" }, vector);
+    (service as any).isVectorReady = true;
+    (service as any).hybridMode = "hybrid";
+    const results = await service.retrieve("cholesterol LDL triglyceride", 5, { intent: "condition_specific" });
+    expect(results.map((r) => r.id)).toContain("condition_lipids");
+  });
 });

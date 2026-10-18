@@ -23,7 +23,8 @@ type QueryEmbeddingCache = {
   cachedAt: number;
 };
 
-const EMBED_BATCH_SIZE = 8;
+/** RAG_INGEST_EMBED_BATCH_SIZE default: one text per request, so a user query can slip in between ingest chunks. */
+const DEFAULT_EMBED_BATCH_SIZE = 1;
 
 @Injectable()
 export class VectorService implements OnModuleInit {
@@ -31,6 +32,7 @@ export class VectorService implements OnModuleInit {
   private model = "bge-m3"; // RAG embedding model (RAG_EMBEDDING_MODEL)
   private embeddingDim = 1024; // RAG_EMBEDDING_DIM
   private foodModel = "nomic-embed-text"; // FOOD_EMBEDDING_MODEL (food search only)
+  private embedBatchSize = DEFAULT_EMBED_BATCH_SIZE; // RAG_INGEST_EMBED_BATCH_SIZE
   private ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
   private cacheDir = ".vector-cache";
   private cacheFile = "embeddings_cache.json";
@@ -54,6 +56,8 @@ export class VectorService implements OnModuleInit {
     this.model = this.config.get<string>("RAG_EMBEDDING_MODEL") || this.model;
     this.embeddingDim = Number(this.config.get<string>("RAG_EMBEDDING_DIM")) || this.embeddingDim;
     this.foodModel = this.config.get<string>("FOOD_EMBEDDING_MODEL") || this.foodModel;
+    const batch = Math.floor(Number(this.config.get<string>("RAG_INGEST_EMBED_BATCH_SIZE")));
+    this.embedBatchSize = batch > 0 ? batch : DEFAULT_EMBED_BATCH_SIZE;
   }
 
   async onModuleInit() {
@@ -298,7 +302,7 @@ export class VectorService implements OnModuleInit {
   /**
    * Get embedding for a query (with short TTL cache)
    */
-  async getQueryEmbedding(query: string): Promise<number[]> {
+  async getQueryEmbedding(query: string, signal?: AbortSignal): Promise<number[]> {
     const text = this.normalizeForRag(query);
     // Check query cache (TTL: 5 minutes)
     const cached = this.queryCache.get(text);
@@ -308,7 +312,7 @@ export class VectorService implements OnModuleInit {
 
     // Generate and cache
     try {
-      const embedding = await this.generateEmbedding(text);
+      const embedding = await this.generateEmbedding(text, signal);
       this.queryCache.set(text, {
         query: text,
         embedding,
@@ -458,19 +462,20 @@ export class VectorService implements OnModuleInit {
   /**
    * Generate embedding via Ollama API
    */
-  private async generateEmbedding(text: string): Promise<number[]> {
-    const [embedding] = await this.embedDocuments([text]);
+  private async generateEmbedding(text: string, signal?: AbortSignal): Promise<number[]> {
+    const [embedding] = await this.requestEmbedBatch([this.normalizeForRag(text)], signal);
     return embedding;
   }
 
   /**
-   * Embed RAG texts in sequential batches (bge-m3 via Ollama /api/embed).
+   * Embed RAG texts in sequential batches of RAG_INGEST_EMBED_BATCH_SIZE (default 1;
+   * bge-m3 via Ollama /api/embed), so user queries are not stuck behind a large ingest batch.
    * Text is only NFC-normalized and trimmed: diacritics and case are kept.
    */
   async embedDocuments(texts: string[]): Promise<number[][]> {
     const out: number[][] = [];
-    for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
-      const input = texts.slice(i, i + EMBED_BATCH_SIZE).map((t) => this.normalizeForRag(t));
+    for (let i = 0; i < texts.length; i += this.embedBatchSize) {
+      const input = texts.slice(i, i + this.embedBatchSize).map((t) => this.normalizeForRag(t));
       out.push(...(await this.requestEmbedBatch(input)));
     }
     return out;
@@ -480,12 +485,13 @@ export class VectorService implements OnModuleInit {
     return String(value ?? "").normalize("NFC").trim();
   }
 
-  private async requestEmbedBatch(input: string[]): Promise<number[][]> {
+  private async requestEmbedBatch(input: string[], signal?: AbortSignal): Promise<number[][]> {
     try {
       const response = await fetch(`${this.ollamaBaseUrl}/api/embed`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: this.model, input })
+        body: JSON.stringify({ model: this.model, input }),
+        ...(signal ? { signal } : {})
       });
 
       if (!response.ok) {

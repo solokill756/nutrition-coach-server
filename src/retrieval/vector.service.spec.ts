@@ -1,11 +1,12 @@
 import { VectorService } from "./vector.service";
 
-function createConfig(pg = false) {
+function createConfig(pg = false, extra: Record<string, string> = {}) {
   return {
     get: jest.fn((k: string) => {
       const map: Record<string, string> = {
         USE_CHUNKING: "false",
         POSTGRES_ENABLE_PGVECTOR: pg ? "true" : "false",
+        ...extra,
       };
       return map[k];
     }),
@@ -53,25 +54,48 @@ describe("VectorService", () => {
     );
   });
 
-  it("embedDocuments batches by 8 sequentially and preserves order", async () => {
-    let inFlight = 0;
-    let maxInFlight = 0;
+  function trackInFlight() {
+    const state = { inFlight: 0, maxInFlight: 0 };
     fetchMock.mockImplementation(async (_url: string, init: any) => {
-      inFlight++;
-      maxInFlight = Math.max(maxInFlight, inFlight);
+      state.inFlight++;
+      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
       await new Promise((r) => setTimeout(r, 1));
-      inFlight--;
+      state.inFlight--;
       const input: string[] = JSON.parse(init.body).input;
       return okJson({ embeddings: input.map((t) => [Number(t.replace("t", ""))]) });
     });
+    return state;
+  }
+
+  it("embedDocuments sends one text per request by default (RAG_INGEST_EMBED_BATCH_SIZE=1), sequentially", async () => {
+    const state = trackInFlight();
     const service = new VectorService(createConfig(false), createPostgres(false));
+    const texts = Array.from({ length: 3 }, (_, i) => `t${i}`);
+    const out = await service.embedDocuments(texts);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const call of fetchMock.mock.calls) expect(JSON.parse(call[1].body).input).toHaveLength(1);
+    expect(state.maxInFlight).toBe(1);
+    expect(out).toEqual([[0], [1], [2]]);
+  });
+
+  it("embedDocuments honours RAG_INGEST_EMBED_BATCH_SIZE, sequentially and in order", async () => {
+    const state = trackInFlight();
+    const service = new VectorService(createConfig(false, { RAG_INGEST_EMBED_BATCH_SIZE: "8" }), createPostgres(false));
     const texts = Array.from({ length: 10 }, (_, i) => `t${i}`);
     const out = await service.embedDocuments(texts);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).input).toHaveLength(8);
     expect(JSON.parse(fetchMock.mock.calls[1][1].body).input).toHaveLength(2);
-    expect(maxInFlight).toBe(1);
+    expect(state.maxInFlight).toBe(1);
     expect(out).toEqual(texts.map((_, i) => [i]));
+  });
+
+  it("getQueryEmbedding passes the abort signal to the Ollama request", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    const controller = new AbortController();
+    await service.getQueryEmbedding("signal test", controller.signal);
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
   });
 
   it("getFoodQueryEmbedding keeps the old normalization and model", async () => {

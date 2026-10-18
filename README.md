@@ -143,6 +143,8 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    | `RAG_INGEST_POLL_MS` | `5000` | Worker poll interval |
    | `RAG_INGEST_WORKER_ENABLED` | `true` | Set `false` to stop picking up jobs |
    | `RAG_MAX_PDF_PAGES` | `300` | PDFs with more pages fail with a clear error. Docling converts at most this + 1 pages, so an over-limit PDF fails fast |
+   | `RAG_INGEST_EMBED_BATCH_SIZE` | `1` | Texts per Ollama embedding request while ingesting (sent one after another). Small batches let user queries slip in between |
+   | `RAG_QUERY_EMBED_TIMEOUT_MS` | `3000` | Max wait for a retrieval query embedding. Past it, that request uses BM25 only |
 
 6. When the server runs in Docker, mount `RAG_STORAGE_DIR` as a volume. It holds the source PDFs and the images
    that the admin page shows next to image chunks, so it must not live inside the image or the container layer:

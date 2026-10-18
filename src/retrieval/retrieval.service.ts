@@ -22,6 +22,10 @@ const CROSS_ENCODER_LITE_TOPK = 10;
 const CROSS_ENCODER_BLEND_WEIGHT = 0.4;
 
 const REBUILD_DEBOUNCE_MS = 2000;
+/** RAG_QUERY_EMBED_TIMEOUT_MS default: past this, the request goes on without vector scores (BM25 only). */
+const DEFAULT_QUERY_EMBED_TIMEOUT_MS = 3000;
+
+type QueryEmbedder = (text: string) => Promise<number[]>;
 
 /** Everything derived from one corpus load; swapped in as a single unit. */
 type RagIndex = {
@@ -156,10 +160,11 @@ export class RetrievalService implements OnModuleInit {
       const subQueries = await this.expandQuery(question, hints);
       console.log(`[RETRIEVAL]  Expanded query into ${subQueries.length} terms: ${subQueries.join(", ")}`);
 
+      const embedQuery = this.createQueryEmbedder();
       const allResults = new Map<string, number>();
 
       for (const query of subQueries) {
-        const results = await this.performSearch(index, query, Math.max(topK * 2, 20), hints, forceMode);
+        const results = await this.performSearch(index, query, Math.max(topK * 2, 20), hints, embedQuery, forceMode);
         for (let i = 0; i < results.length; i++) {
           const rank = i + 1;
           const score = 1 / (RRF_K + rank);
@@ -187,14 +192,21 @@ export class RetrievalService implements OnModuleInit {
       const candidateDocs = index.docs.filter((d) => finalDocIds.includes(d.id));
       const candidateDocIds = candidateDocs.map((doc) => doc.id);
 
-      const queryEmbedding = await this.vectorService.getQueryEmbedding(question);
+      // A slow or failed query embedding degrades the re-rank to RRF only instead of failing the request.
+      let queryEmbedding: number[] | null = null;
+      try {
+        queryEmbedding = await embedQuery(question);
+      } catch (error) {
+        console.warn(`[RETRIEVAL]  Query embedding unavailable; re-ranking without semantic scores: ${(error as Error)?.message ?? error}`);
+      }
       const pgSemantic = new Map<string, number>();
-      if (this.vectorService.docEmbeddingsInPostgres() && candidateDocIds.length > 0) {
+      if (queryEmbedding && this.vectorService.docEmbeddingsInPostgres() && candidateDocIds.length > 0) {
         const ranked = await this.vectorService.vectorSearch(queryEmbedding, candidateDocIds, candidateDocIds.length);
         for (const r of ranked) pgSemantic.set(r.docId, r.score);
       }
 
-      const scoredDocs = candidateDocs.map((doc) => {
+      const scoredDocs = candidateDocs.map((doc): { doc: DomainDoc; semanticScore: number | null } => {
+        if (!queryEmbedding) return { doc, semanticScore: null };
         if (pgSemantic.size > 0) {
           const s = pgSemantic.get(doc.id);
           if (typeof s === "number") return { doc, semanticScore: s };
@@ -216,13 +228,16 @@ export class RetrievalService implements OnModuleInit {
         : 1.0;
 
       const rankedDocs = scoredDocs.map(({ doc, semanticScore }) => {
+        const normRrf = (allResults.get(doc.id) || 0) / maxRrf;
+        // Without a query embedding the RRF score stands in for the semantic score.
+        const baseScore = semanticScore ?? normRrf;
         const crossScore = crossEncoderScores.get(doc.id);
         if (typeof crossScore === "number") {
-          const score = (1 - CROSS_ENCODER_BLEND_WEIGHT) * semanticScore + CROSS_ENCODER_BLEND_WEIGHT * crossScore;
+          const score = (1 - CROSS_ENCODER_BLEND_WEIGHT) * baseScore + CROSS_ENCODER_BLEND_WEIGHT * crossScore;
           return { doc, score, semanticScore, crossScore };
         }
-        const normRrf = (allResults.get(doc.id) || 0) / maxRrf;
-        return { doc, score: 0.4 * semanticScore + 0.6 * normRrf, semanticScore };
+        const score = semanticScore === null ? normRrf : 0.4 * semanticScore + 0.6 * normRrf;
+        return { doc, score, semanticScore };
       });
 
       const diversifiedDocs = this.applyDiversityRerank(
@@ -321,17 +336,50 @@ export class RetrievalService implements OnModuleInit {
     return this.hybridMode;
   }
 
+  /**
+   * Query embedding for one retrieve() call, capped at RAG_QUERY_EMBED_TIMEOUT_MS (default 3000).
+   * On timeout the Ollama request is aborted; after the first failure the rest of the request
+   * skips the vector stage, so one request waits for the timeout at most once.
+   * (AbortController + setTimeout rather than AbortSignal.timeout: same behaviour, and it runs
+   * under Jest fake timers.)
+   */
+  private createQueryEmbedder(): QueryEmbedder {
+    const configured = Number(this.config.get<string>("RAG_QUERY_EMBED_TIMEOUT_MS"));
+    const timeoutMs = configured > 0 ? configured : DEFAULT_QUERY_EMBED_TIMEOUT_MS;
+    let failure: Error | null = null;
+    return async (text: string) => {
+      if (failure) throw failure;
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Query embedding timed out after ${timeoutMs} ms`));
+        }, timeoutMs);
+      });
+      try {
+        return await Promise.race([this.vectorService.getQueryEmbedding(text, controller.signal), timeout]);
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+        throw failure;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+  }
+
   private async performSearch(
     index: RagIndex,
     query: string,
     topK: number,
     hints: RetrievalHints,
+    embedQuery: QueryEmbedder,
     forceMode?: HybridSearchMode
   ): Promise<RetrievalResult[]> {
     const mode = forceMode ?? this.getEffectiveHybridMode();
 
     if (mode === "vector-only") {
-      return this.performVectorOnlySearch(index, query, topK, hints);
+      return this.performVectorOnlySearch(index, query, topK, hints, embedQuery);
     }
 
     const bm25Results = index.bm25Searcher.search(query, hints);
@@ -341,7 +389,7 @@ export class RetrievalService implements OnModuleInit {
     }
 
     try {
-      const queryEmbedding = await this.vectorService.getQueryEmbedding(query);
+      const queryEmbedding = await embedQuery(query);
       const vectorSearchResults = await this.vectorService.vectorSearchAll(queryEmbedding, topK * 2);
 
       let filteredVectorResults = vectorSearchResults;
@@ -388,13 +436,14 @@ export class RetrievalService implements OnModuleInit {
     index: RagIndex,
     query: string,
     topK: number,
-    hints: RetrievalHints
+    hints: RetrievalHints,
+    embedQuery: QueryEmbedder
   ): Promise<RetrievalResult[]> {
     if (!this.isVectorReady) {
       return this.bm25RankedToResults(index, index.bm25Searcher.search(query, hints), topK);
     }
     try {
-      const queryEmbedding = await this.vectorService.getQueryEmbedding(query);
+      const queryEmbedding = await embedQuery(query);
       const vectorSearchResults = await this.vectorService.vectorSearchAll(queryEmbedding, topK * 2);
 
       let filtered = vectorSearchResults;

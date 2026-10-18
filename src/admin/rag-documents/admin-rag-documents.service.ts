@@ -7,7 +7,7 @@ import { RagFileStorageService } from "../../rag-ingest/rag-file-storage.service
 import { RagChunkRow, RagDocumentRow, RagJobRow, RagStoreService } from "../../rag-ingest/rag-store.service";
 import { RAG_DOMAINS, RAG_TAXONOMY, RagDomain, RagTags, isRagDomain, sanitizeTags } from "../../rag-ingest/rag-taxonomy";
 import { TaggingService } from "../../rag-ingest/taggers/tagging.service";
-import { normalizeMultiline } from "../../rag-ingest/text-normalize";
+import { normalizeMultiline, normalizeText } from "../../rag-ingest/text-normalize";
 import { normalizeSourceUrl } from "../../rag-ingest/url-normalize";
 import { RetrievalService } from "../../retrieval/retrieval.service";
 import { VectorService } from "../../retrieval/vector.service";
@@ -136,7 +136,8 @@ export class AdminRagDocumentsService {
     const existing = await this.store.findDocumentByFileHash(fileHash);
     if (existing) return { success: true, data: await this.documentDto(existing), created: false };
 
-    const originalFilename = path.basename(file.originalname.replace(/\\/g, "/"));
+    // Filename is already UTF-8 decoded by multer (defParamCharset in the controller); store it NFC.
+    const originalFilename = normalizeText(path.basename(file.originalname.replace(/\\/g, "/")));
     const created = await this.store.createDocument({
       sourceType: "pdf",
       originalFilename,
@@ -181,7 +182,7 @@ export class AdminRagDocumentsService {
   }
 
   async renameDocument(id: string, title: string): Promise<RagDocumentEnvelope> {
-    const trimmed = title.trim();
+    const trimmed = normalizeText(title);
     if (!trimmed) throw new AdminRagException("VALIDATION_ERROR", HttpStatus.BAD_REQUEST);
     const updated = await this.store.updateDocument(id, { title: trimmed });
     if (!updated) throw new AdminRagException("RAG_DOCUMENT_NOT_FOUND", HttpStatus.NOT_FOUND);

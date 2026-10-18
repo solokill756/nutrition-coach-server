@@ -205,6 +205,26 @@ describe("AdminRagDocumentsService", () => {
     });
   });
 
+  describe("unicode normalization", () => {
+    it("stores an NFD filename as NFC for both originalFilename and title", async () => {
+      const t = setup();
+      const nfd = "Hương dẫn.pdf".normalize("NFD");
+      const nfc = nfd.normalize("NFC");
+      expect(nfd).not.toBe(nfc);
+      await t.service.uploadPdf({ originalname: nfd, mimetype: "application/pdf", buffer: PDF }, 1);
+      const arg = t.store.createDocument.mock.calls[0][0];
+      expect(arg.originalFilename).toBe(nfc);
+      expect(arg.title).toBe(nfc.replace(/\.pdf$/i, ""));
+    });
+
+    it("rename stores NFC", async () => {
+      const t = setup();
+      const nfd = "Dinh dũơng".normalize("NFD");
+      await t.service.renameDocument("d1", nfd);
+      expect(t.store.updateDocument).toHaveBeenCalledWith("d1", { title: nfd.normalize("NFC") });
+    });
+  });
+
   describe("documents", () => {
     it("lists with pagination and ISO dates", async () => {
       const t = setup();

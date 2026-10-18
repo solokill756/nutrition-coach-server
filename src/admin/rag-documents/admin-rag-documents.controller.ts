@@ -35,6 +35,9 @@ import { UpdateRagDocumentRequestDto } from "./dto/update-rag-document-request.d
 
 const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 
+/** defParamCharset utf8: browsers send multipart filenames as raw UTF-8; multer defaults to latin1 (mojibake). */
+export const RAG_UPLOAD_OPTIONS = { limits: { fileSize: MAX_UPLOAD_BYTES }, defParamCharset: "utf8" };
+
 type AdminRequest = { user: AdminJwtUser };
 
 /** Multer's LIMIT_FILE_SIZE surfaces as PayloadTooLargeException; render it in the admin error envelope. */
@@ -59,7 +62,7 @@ export class AdminRagDocumentsController {
 
   @Post("documents/upload")
   @UseFilters(RagUploadTooLargeFilter)
-  @UseInterceptors(FileInterceptor("file", { limits: { fileSize: MAX_UPLOAD_BYTES } }))
+  @UseInterceptors(FileInterceptor("file", RAG_UPLOAD_OPTIONS))
   async upload(@Req() req: AdminRequest, @UploadedFile() file: UploadedPdf | undefined) {
     return this.service.uploadPdf(file, req.user.userId);
   }

@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import * as fs from "fs/promises";
 import * as path from "path";
 import { InlineImage } from "../ollama/gemini-vision.client";
@@ -14,8 +15,8 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
 export class RagFileStorageService {
   private readonly root: string;
 
-  constructor() {
-    this.root = path.resolve(process.cwd(), process.env.RAG_STORAGE_DIR || "./storage/rag");
+  constructor(private readonly config: ConfigService) {
+    this.root = path.resolve(process.cwd(), this.config.get<string>("RAG_STORAGE_DIR") || "./storage/rag");
   }
 
   async saveSourcePdf(documentId: string, buffer: Buffer): Promise<string> {

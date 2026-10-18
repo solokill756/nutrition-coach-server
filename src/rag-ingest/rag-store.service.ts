@@ -1,4 +1,5 @@
 import { Injectable } from "@nestjs/common";
+import { ConfigService } from "@nestjs/config";
 import { createHash, randomUUID } from "crypto";
 import { DataSource } from "typeorm";
 import { ChunkMergePlan, ExistingChunkState, planChunkMerge } from "./chunk-merge-planner";
@@ -180,8 +181,15 @@ export class RagStoreService {
   private readonly chunks: string;
   private readonly embeddings: string;
 
-  constructor(private readonly dataSource: DataSource) {
-    this.schema = process.env.POSTGRES_SCHEMA || "public";
+  private readonly embeddingModel: string;
+
+  constructor(
+    private readonly dataSource: DataSource,
+    private readonly config: ConfigService
+  ) {
+    this.schema = this.config.get<string>("POSTGRES_SCHEMA") || "public";
+    this.embeddingModel =
+      this.config.get<string>("RAG_EMBEDDING_MODEL") || this.config.get<string>("POSTGRES_EMBEDDING_MODEL") || "bge-m3";
     this.documents = this.tableRef("rag_documents");
     this.jobs = this.tableRef("rag_ingest_jobs");
     this.chunks = this.tableRef("rag_chunks");
@@ -321,12 +329,11 @@ export class RagStoreService {
   }
 
   async deleteDocument(id: string): Promise<boolean> {
-    // Chunks are removed explicitly because the chunk FK is NOT VALID for legacy rows but still cascades for new ones.
-    return this.dataSource.transaction(async (manager) => {
-      await manager.query(`DELETE FROM ${this.chunks} WHERE doc_id = $1`, [id]);
-      const rows = rowsOf(await manager.query(`DELETE FROM ${this.documents} WHERE id = $1 RETURNING id`, [id]));
-      return rows.length > 0;
-    });
+    // Delete only the document row: ON DELETE CASCADE (a NOT VALID FK still enforces cascades) removes chunks, jobs
+    // and embeddings. Deleting chunks first would lock them before the document, the reverse of applyIngestResult's
+    // lock order (document, then chunks), and could deadlock.
+    const rows = rowsOf(await this.dataSource.query(`DELETE FROM ${this.documents} WHERE id = $1 RETURNING id`, [id]));
+    return rows.length > 0;
   }
 
   // --------------------------------------------------------------------- jobs
@@ -505,7 +512,7 @@ export class RagStoreService {
     documentId: string,
     input: ApplyIngestInput
   ): Promise<{ documentMissing: boolean; plan?: ChunkMergePlan }> {
-    const model = process.env.RAG_EMBEDDING_MODEL || "bge-m3";
+    const model = this.embeddingModel;
 
     return this.dataSource.transaction(async (manager) => {
       const q: QueryFn = (sql, params) => manager.query(sql, params);

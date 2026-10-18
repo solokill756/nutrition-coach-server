@@ -3,7 +3,11 @@ import { emptyTags } from "./rag-taxonomy";
 
 type Call = { sql: string; params: unknown[] };
 
-function makeStore(txHandler: (sql: string, params: unknown[]) => unknown, plainHandler?: (sql: string, params: unknown[]) => unknown) {
+function makeStore(
+  txHandler: (sql: string, params: unknown[]) => unknown,
+  plainHandler?: (sql: string, params: unknown[]) => unknown,
+  env: Record<string, string> = {}
+) {
   const txCalls: Call[] = [];
   const plainCalls: Call[] = [];
   const manager = {
@@ -19,7 +23,8 @@ function makeStore(txHandler: (sql: string, params: unknown[]) => unknown, plain
     }),
     transaction: jest.fn(async (cb: (m: any) => unknown) => cb(manager)),
   };
-  const store = new RagStoreService(dataSource);
+  const config: any = { get: (key: string) => env[key] };
+  const store = new RagStoreService(dataSource, config);
   return { store, txCalls, plainCalls, dataSource };
 }
 
@@ -213,6 +218,37 @@ describe("RagStoreService", () => {
       expect(c.sql).not.toContain("DROP TABLE");
       expect(c.sql).not.toContain("content-g");
     }
+  });
+
+  it("embedding model falls back to POSTGRES_EMBEDDING_MODEL, then bge-m3", async () => {
+    const handler = (sql: string) => {
+      if (/FROM .*rag_documents.*FOR UPDATE/s.test(sql)) return [docRow];
+      if (/count\(\*\)/i.test(sql)) return [{ count: 1 }];
+      return [];
+    };
+    const input = { title: "T", language: "en" as const, chunks: [ready("g", "1")], draftKeys: [{ chunkKey: "g", sourceContentHash: "1" }] };
+    const a = makeStore(handler, undefined, { POSTGRES_EMBEDDING_MODEL: "legacy-model" });
+    await a.store.applyIngestResult("doc-1", input);
+    expect(a.txCalls.find((c) => /INSERT INTO .*rag_embeddings/s.test(c.sql))!.params).toContain("legacy-model");
+    const b = makeStore(handler);
+    await b.store.applyIngestResult("doc-1", input);
+    expect(b.txCalls.find((c) => /INSERT INTO .*rag_embeddings/s.test(c.sql))!.params).toContain("bge-m3");
+    const c = makeStore(handler, undefined, { RAG_EMBEDDING_MODEL: "primary", POSTGRES_EMBEDDING_MODEL: "legacy-model" });
+    await c.store.applyIngestResult("doc-1", input);
+    expect(c.txCalls.find((x) => /INSERT INTO .*rag_embeddings/s.test(x.sql))!.params).toContain("primary");
+  });
+
+  it("deleteDocument issues a single DELETE on rag_documents and never deletes chunks first", async () => {
+    const { store, plainCalls, txCalls, dataSource } = makeStore(
+      () => [],
+      (sql) => (/DELETE FROM .*rag_documents/s.test(sql) ? [{ id: "doc-1" }] : [])
+    );
+    expect(await store.deleteDocument("doc-1")).toBe(true);
+    expect(plainCalls).toHaveLength(1);
+    expect(plainCalls[0].sql).toMatch(/DELETE FROM .*rag_documents/s);
+    expect(txCalls).toHaveLength(0);
+    expect(dataSource.transaction).not.toHaveBeenCalled();
+    expect(plainCalls.some((c) => /rag_chunks/.test(c.sql))).toBe(false);
   });
 
   it("failJob and finishJob tolerate zero updated rows", async () => {

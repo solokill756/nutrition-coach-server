@@ -6,17 +6,14 @@ import { RagFileStorageService } from "./rag-file-storage.service";
 describe("RagFileStorageService", () => {
   let dir: string;
   let service: RagFileStorageService;
-  const prev = process.env.RAG_STORAGE_DIR;
 
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), "rag-storage-"));
-    process.env.RAG_STORAGE_DIR = dir;
-    service = new RagFileStorageService();
+    const config: any = { get: (key: string) => (key === "RAG_STORAGE_DIR" ? dir : undefined) };
+    service = new RagFileStorageService(config);
   });
 
   afterEach(async () => {
-    if (prev === undefined) delete process.env.RAG_STORAGE_DIR;
-    else process.env.RAG_STORAGE_DIR = prev;
     await fs.rm(dir, { recursive: true, force: true });
   });
 

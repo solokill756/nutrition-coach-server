@@ -55,6 +55,16 @@ export class RagIngestPipeline {
     try {
       await this.execute(job, warnings);
     } catch (err) {
+      try {
+        if (!(await this.store.getDocument(job.documentId))) {
+          // The document was deleted while the job ran (its job row cascaded away); nothing to report.
+          await this.files.deleteDocumentDir(job.documentId);
+          this.logger.debug(`Ingest job ${job.id}: document ${job.documentId} was deleted; skipping failJob`);
+          return;
+        }
+      } catch (checkErr) {
+        this.logger.warn(`Could not check document ${job.documentId} after failure: ${shortMessage(checkErr)}`);
+      }
       const message = this.describeFailure(err);
       this.logger.error(`Ingest job ${job.id} failed: ${message}`);
       try {
@@ -125,7 +135,9 @@ export class RagIngestPipeline {
     for (const index of imageTexts.keys()) {
       const block = extracted.blocks[index];
       if (block?.kind !== "image") continue;
-      imagePaths.set(index, await this.files.saveImage(job.documentId, `img-${index}`, block.image));
+      // Named by content: block indexes shift between document versions, and unchanged chunks keep old imagePaths.
+      const name = `img-${sha256(block.image.base64).slice(0, 16)}`;
+      imagePaths.set(index, await this.files.saveImage(job.documentId, name, block.image));
     }
 
     // ---- chunking

@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { RagIngestWorker } from "./rag-ingest.worker";
 
 function setup(env: Record<string, string> = {}) {
@@ -21,6 +22,11 @@ function setup(env: Record<string, string> = {}) {
 }
 
 describe("RagIngestWorker", () => {
+  beforeEach(() => {
+    for (const m of ["log", "error", "warn", "debug"] as const) {
+      jest.spyOn(Logger.prototype, m).mockImplementation(() => undefined);
+    }
+  });
   afterEach(() => jest.restoreAllMocks());
 
   it("resets running jobs before registering the interval on bootstrap", async () => {

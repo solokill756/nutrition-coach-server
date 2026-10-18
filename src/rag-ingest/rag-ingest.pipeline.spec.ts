@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { DoclingError } from "./docling.client";
 import { RagIngestPipeline } from "./rag-ingest.pipeline";
 import { ExtractedDocument, DraftChunk } from "./rag-ingest.types";
@@ -101,6 +102,56 @@ function setup(opts: { sourceType?: "pdf" | "url"; extracted?: ExtractedDocument
 }
 
 describe("RagIngestPipeline", () => {
+  beforeEach(() => {
+    for (const m of ["log", "error", "warn", "debug"] as const) {
+      jest.spyOn(Logger.prototype, m).mockImplementation(() => undefined);
+    }
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  it("names images by content so a shifted block index never reuses another image's name", async () => {
+    const imgA = { base64: "AAAA", mimeType: "image/png", width: 300, height: 300 };
+    const imgB = { base64: "BBBB", mimeType: "image/png", width: 300, height: 300 };
+    const text = { kind: "paragraph" as const, text: words(80) };
+    const run = async (blocks: any[], texts: [number, string][]) => {
+      const s = setup({ extracted: doc({ blocks }) });
+      s.transcriber.transcribeAll.mockResolvedValue({ texts: new Map(texts), skippedErrors: 0 });
+      await s.pipeline.run(job);
+      return s.files.saveImage.mock.calls.map((c: any[]) => ({ name: c[1], base64: c[2].base64 }));
+    };
+    const v1 = await run([text, { kind: "image", image: imgA }], [[1, "a"]]);
+    const v2 = await run([text, { kind: "image", image: imgB }, { kind: "image", image: imgA }], [[1, "b"], [2, "a"]]);
+    const all = [...v1, ...v2];
+    const byName = new Map<string, string>();
+    for (const { name, base64 } of all) {
+      expect(byName.get(name) ?? base64).toBe(base64);
+      byName.set(name, base64);
+    }
+    expect(v1[0].name).toBe(v2[1].name);
+    expect(v2[0].name).not.toBe(v2[1].name);
+    expect(v1[0].name).toMatch(/^img-[0-9a-f]{16}$/);
+  });
+
+  it("cleans up and skips failJob when the document is missing at the start", async () => {
+    const s = setup();
+    s.store.getDocument.mockResolvedValue(null);
+    await s.pipeline.run(job);
+    expect(s.files.deleteDocumentDir).toHaveBeenCalledWith("doc-1");
+    expect(s.store.failJob).not.toHaveBeenCalled();
+    expect(s.store.finishJob).not.toHaveBeenCalled();
+  });
+
+  it("skips failJob when the document is deleted mid-run and a later stage fails", async () => {
+    const s = setup();
+    const rec = await s.store.getDocument();
+    s.store.getDocument.mockResolvedValueOnce(rec).mockResolvedValue(null);
+    s.vector.embedDocuments.mockRejectedValue(new Error("ollama down"));
+    await s.pipeline.run(job);
+    expect(s.files.deleteDocumentDir).toHaveBeenCalledWith("doc-1");
+    expect(s.store.failJob).not.toHaveBeenCalled();
+    expect(s.store.finishJob).not.toHaveBeenCalled();
+  });
+
   it("(a) runs the full flow in stage order", async () => {
     const s = setup();
     await s.pipeline.run(job);
@@ -217,10 +268,12 @@ describe("RagIngestPipeline", () => {
     const s = setup({ extracted, chunks: drafts(2, [{}, { blockKind: "image", imageBlockIndex: 1 }]) });
     s.transcriber.transcribeAll.mockResolvedValue({ texts: new Map([[1, "a chart"]]), skippedErrors: 0 });
     await s.pipeline.run(job);
-    expect(s.files.saveImage).toHaveBeenCalledWith("doc-1", "img-1", image);
+    const name = s.files.saveImage.mock.calls[0][1];
+    expect(name).toMatch(/^img-[0-9a-f]{16}$/);
+    expect(s.files.saveImage).toHaveBeenCalledWith("doc-1", name, image);
     const chunks = s.store.applyIngestResult.mock.calls[0][1].chunks;
     expect(chunks[0].imagePath).toBeNull();
-    expect(chunks[1].imagePath).toBe("documents/doc-1/images/img-1.png");
+    expect(chunks[1].imagePath).toBe(`documents/doc-1/images/${name}.png`);
   });
 
   it("(f) cleans up and stays silent when the document was deleted", async () => {

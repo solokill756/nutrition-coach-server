@@ -1,5 +1,6 @@
 import { Injectable, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
+import { resolveRagEmbeddingModel } from "./rag-embedding-model";
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const { Pool } = require("pg");
@@ -43,10 +44,7 @@ export class PostgresRagService implements OnModuleDestroy {
     this.enabled = String(this.config.get<string>("USE_POSTGRES_STORAGE") || "false").toLowerCase() === "true";
     this.dbSchema = this.config.get<string>("POSTGRES_SCHEMA") || "public";
     this.embeddingDim = Number(this.config.get<string>("RAG_EMBEDDING_DIM") || 1024);
-    this.embeddingModel =
-      this.config.get<string>("RAG_EMBEDDING_MODEL") ||
-      this.config.get<string>("POSTGRES_EMBEDDING_MODEL") ||
-      "bge-m3";
+    this.embeddingModel = resolveRagEmbeddingModel(this.config);
     this.vectorIndexType = String(this.config.get<string>("POSTGRES_VECTOR_INDEX_TYPE") || "hnsw").toLowerCase();
     this.pool = this.enabled ? new Pool(this.buildPoolConfig()) : null;
   }

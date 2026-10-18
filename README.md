@@ -120,6 +120,23 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    psql -h <host> -p <port> -U <user> -d <db> -f scripts/sql/rag-reset-embeddings-1024.sql
    ```
 
+   **This script is destructive.** It drops `rag_embeddings`, which deletes every RAG embedding row. Run it only once,
+   when the log above shows the old 768 dimension, and before you ingest documents. If you run it after ingesting,
+   every chunk loses vector search, and re-ingesting does not bring back unchanged chunks (their embedding is kept,
+   not rebuilt): you would have to delete and re-add each document. The script assumes the `public` schema. If
+   `POSTGRES_SCHEMA` is something else, change `public.rag_embeddings` in the script first.
+
+   Migrating an old database: legacy `rag_chunks` rows from the old corpus have no `rag_documents` row
+   (`chunk_key IS NULL`). Retrieval still serves them, but the admin pages cannot see or edit them. Delete them once:
+
+   ```sql
+   DELETE FROM public.rag_chunks c
+   WHERE c.chunk_key IS NULL
+     AND NOT EXISTS (SELECT 1 FROM public.rag_documents d WHERE d.id = c.doc_id);
+   ```
+
+   Their `rag_embeddings` rows are deleted with them (`ON DELETE CASCADE`).
+
 4. Create a new Jev (TypeSafe) API key for this deployment and put it in `TYPESAFE_API_KEY`. Never reuse a key that
    has been shared or committed. Without a key, tagging falls back to Gemini (through `LLM_PROVIDER`).
 
@@ -127,7 +144,7 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
 
    | Variable | Default | Purpose |
    |---|---|---|
-   | `RAG_EMBEDDING_MODEL` | `bge-m3` | Ollama model for RAG chunks and RAG queries |
+   | `RAG_EMBEDDING_MODEL` | `bge-m3` | Ollama model for RAG chunks and RAG queries, and the `model` label on `rag_embeddings` rows. Set it explicitly; `POSTGRES_EMBEDDING_MODEL` is not used for RAG |
    | `RAG_EMBEDDING_DIM` | `1024` | Must match `rag_embeddings.embedding` |
    | `FOOD_EMBEDDING_MODEL` | `nomic-embed-text` | Food semantic search model (unchanged) |
    | `POSTGRES_SYNC_EMBEDDINGS_ON_BOOT` | `false` | Ignored (a startup log line says so): the ingest worker owns RAG embeddings now |

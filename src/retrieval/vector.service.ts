@@ -4,6 +4,7 @@ import * as fs from "fs";
 import * as path from "path";
 import { createHash } from "crypto";
 import { PostgresRagService } from "./postgres-rag.service";
+import { resolveRagEmbeddingModel } from "./rag-embedding-model";
 
 type EmbeddingCache = {
   version: string;
@@ -53,7 +54,7 @@ export class VectorService implements OnModuleInit {
     private readonly config: ConfigService,
     private readonly postgresRagService: PostgresRagService
   ) {
-    this.model = this.config.get<string>("RAG_EMBEDDING_MODEL") || this.model;
+    this.model = resolveRagEmbeddingModel(this.config);
     this.embeddingDim = Number(this.config.get<string>("RAG_EMBEDDING_DIM")) || this.embeddingDim;
     this.foodModel = this.config.get<string>("FOOD_EMBEDDING_MODEL") || this.foodModel;
     const batch = Math.floor(Number(this.config.get<string>("RAG_INGEST_EMBED_BATCH_SIZE")));

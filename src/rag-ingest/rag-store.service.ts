@@ -2,6 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { createHash, randomUUID } from "crypto";
 import { DataSource } from "typeorm";
+import { resolveRagEmbeddingModel } from "../retrieval/rag-embedding-model";
 import { ChunkMergePlan, ExistingChunkState, planChunkMerge } from "./chunk-merge-planner";
 import { DraftChunk } from "./rag-ingest.types";
 import { RagDomain, RagTags } from "./rag-taxonomy";
@@ -188,8 +189,7 @@ export class RagStoreService {
     private readonly config: ConfigService
   ) {
     this.schema = this.config.get<string>("POSTGRES_SCHEMA") || "public";
-    this.embeddingModel =
-      this.config.get<string>("RAG_EMBEDDING_MODEL") || this.config.get<string>("POSTGRES_EMBEDDING_MODEL") || "bge-m3";
+    this.embeddingModel = resolveRagEmbeddingModel(this.config);
     this.documents = this.tableRef("rag_documents");
     this.jobs = this.tableRef("rag_ingest_jobs");
     this.chunks = this.tableRef("rag_chunks");

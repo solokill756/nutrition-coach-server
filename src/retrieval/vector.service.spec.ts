@@ -98,6 +98,16 @@ describe("VectorService", () => {
     expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
   });
 
+  it("embeds RAG text with RAG_EMBEDDING_MODEL and ignores POSTGRES_EMBEDDING_MODEL", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    const legacy = new VectorService(createConfig(false, { POSTGRES_EMBEDDING_MODEL: "nomic-embed-text" }), createPostgres(false));
+    await legacy.embedDocuments(["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe("bge-m3");
+    const custom = new VectorService(createConfig(false, { RAG_EMBEDDING_MODEL: "custom-rag" }), createPostgres(false));
+    await custom.embedDocuments(["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).model).toBe("custom-rag");
+  });
+
   it("getFoodQueryEmbedding keeps the old normalization and model", async () => {
     fetchMock.mockResolvedValue(okJson({ embedding: [0.5, 0.6] }));
     const service = new VectorService(createConfig(false), createPostgres(false));

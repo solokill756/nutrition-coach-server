@@ -247,7 +247,7 @@ describe("RagStoreService", () => {
     }
   });
 
-  it("embedding model falls back to POSTGRES_EMBEDDING_MODEL, then bge-m3", async () => {
+  it("embedding model is RAG_EMBEDDING_MODEL, else bge-m3; POSTGRES_EMBEDDING_MODEL is ignored", async () => {
     const handler = (sql: string) => {
       if (/FROM .*rag_documents.*FOR UPDATE/s.test(sql)) return [docRow];
       if (/count\(\*\)/i.test(sql)) return [{ count: 1 }];
@@ -256,7 +256,8 @@ describe("RagStoreService", () => {
     const input = { title: "T", language: "en" as const, chunks: [ready("g", "1")], draftKeys: [{ chunkKey: "g", sourceContentHash: "1" }] };
     const a = makeStore(handler, undefined, { POSTGRES_EMBEDDING_MODEL: "legacy-model" });
     await a.store.applyIngestResult("doc-1", input);
-    expect(a.txCalls.find((c) => /INSERT INTO .*rag_embeddings/s.test(c.sql))!.params).toContain("legacy-model");
+    expect(a.txCalls.find((c) => /INSERT INTO .*rag_embeddings/s.test(c.sql))!.params).toContain("bge-m3");
+    expect(a.txCalls.find((c) => /INSERT INTO .*rag_embeddings/s.test(c.sql))!.params).not.toContain("legacy-model");
     const b = makeStore(handler);
     await b.store.applyIngestResult("doc-1", input);
     expect(b.txCalls.find((c) => /INSERT INTO .*rag_embeddings/s.test(c.sql))!.params).toContain("bge-m3");

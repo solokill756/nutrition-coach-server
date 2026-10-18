@@ -85,6 +85,14 @@ describe("PostgresRagService", () => {
     expect(sql).toMatch(/vector\(1024\)/);
   });
 
+  it("rag_embeddings.model defaults to the RAG model (bge-m3), not POSTGRES_EMBEDDING_MODEL", async () => {
+    queryMock.mockResolvedValue({ rows: [{ atttypmod: 1024 }], rowCount: 1 });
+    await new PostgresRagService(createConfig(true)).ensureSchema();
+    const sql = queryMock.mock.calls.map((c) => String(c[0])).join("\n");
+    expect(sql).toMatch(/model TEXT NOT NULL DEFAULT 'bge-m3'/);
+    expect(sql).not.toContain("nomic-embed-text");
+  });
+
   it("ensureSchema runs once for concurrent callers (VectorService and RetrievalService boot together)", async () => {
     // Two parallel CREATE TABLE IF NOT EXISTS on a fresh DB collide on pg_type_typname_nsp_index.
     queryMock.mockResolvedValue({ rows: [{ atttypmod: 1024 }], rowCount: 1 });

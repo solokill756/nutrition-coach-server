@@ -327,11 +327,15 @@ describe("AdminRagDocumentsService", () => {
       expect(t.retrieval.scheduleRebuild).toHaveBeenCalledTimes(1);
     });
 
-    it("uses the configured embedding model", async () => {
+    it("labels the embedding with RAG_EMBEDDING_MODEL, never POSTGRES_EMBEDDING_MODEL", async () => {
       const t = setup();
-      t.config.get.mockImplementation((k: string) => (k === "POSTGRES_EMBEDDING_MODEL" ? "m2" : undefined));
+      t.config.get.mockImplementation((k: string) => (k === "RAG_EMBEDDING_MODEL" ? "m2" : undefined));
       await t.service.updateChunk("d1-c1", { content: "x" });
       expect(t.store.upsertEmbedding.mock.calls[0][3]).toBe("m2");
+      const legacy = setup();
+      legacy.config.get.mockImplementation((k: string) => (k === "POSTGRES_EMBEDDING_MODEL" ? "nomic-embed-text" : undefined));
+      await legacy.service.updateChunk("d1-c1", { content: "x" });
+      expect(legacy.store.upsertEmbedding.mock.calls[0][3]).toBe("bge-m3");
     });
 
     it("keeps the save and returns 502 RAG_EMBEDDING_FAILED when embedding fails", async () => {

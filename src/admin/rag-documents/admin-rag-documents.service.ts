@@ -9,6 +9,7 @@ import { RAG_DOMAINS, RAG_TAXONOMY, RagDomain, RagTags, isRagDomain, sanitizeTag
 import { TaggingService } from "../../rag-ingest/taggers/tagging.service";
 import { normalizeMultiline, normalizeText } from "../../rag-ingest/text-normalize";
 import { normalizeSourceUrl } from "../../rag-ingest/url-normalize";
+import { resolveRagEmbeddingModel } from "../../retrieval/rag-embedding-model";
 import { RetrievalService } from "../../retrieval/retrieval.service";
 import { VectorService } from "../../retrieval/vector.service";
 import { AdminRagException } from "./admin-rag-documents.exception";
@@ -334,10 +335,6 @@ export class AdminRagDocumentsService {
     const doc = await this.store.getDocument(chunk.docId);
     const text = buildEmbeddingText(doc?.title ?? chunk.title, { headingPath: chunk.headingPath ?? "", content });
     const [vec] = await this.vector.embedDocuments([text]);
-    await this.store.upsertEmbedding(chunk.id, vec, sha256(text), this.embeddingModel());
-  }
-
-  private embeddingModel(): string {
-    return this.config.get<string>("RAG_EMBEDDING_MODEL") || this.config.get<string>("POSTGRES_EMBEDDING_MODEL") || "bge-m3";
+    await this.store.upsertEmbedding(chunk.id, vec, sha256(text), resolveRagEmbeddingModel(this.config));
   }
 }

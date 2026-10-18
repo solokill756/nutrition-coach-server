@@ -188,10 +188,25 @@ describe("RagIngestPipeline", () => {
     expect(s.store.failJob).toHaveBeenCalledWith("7", "Page has no readable content (it may need JavaScript)", []);
   });
 
-  it("fails when the PDF has too many pages", async () => {
+  it("asks Docling to convert at most RAG_MAX_PDF_PAGES + 1 pages of a PDF", async () => {
+    const s = setup();
+    await s.pipeline.run(job);
+    expect(s.docling.convertPdf).toHaveBeenCalledWith(expect.any(Buffer), "a.pdf", { maxPages: 300 });
+    expect(s.store.finishJob).toHaveBeenCalled();
+  });
+
+  it("fails when the capped conversion reaches max + 1 pages (the PDF is over the limit)", async () => {
     const s = setup({ extracted: doc({ pageCount: 301 }) });
     await s.pipeline.run(job);
-    expect(s.store.failJob).toHaveBeenCalledWith("7", "PDF has 301 pages; the limit is 300", []);
+    expect(s.store.failJob).toHaveBeenCalledWith("7", "PDF has more than 300 pages; the limit is 300", []);
+    expect(s.transcriber.transcribeAll).not.toHaveBeenCalled();
+  });
+
+  it("accepts a PDF of exactly RAG_MAX_PDF_PAGES pages", async () => {
+    const s = setup({ extracted: doc({ pageCount: 300 }) });
+    await s.pipeline.run(job);
+    expect(s.store.failJob).not.toHaveBeenCalled();
+    expect(s.store.finishJob).toHaveBeenCalled();
   });
 
   it("fails with 'No content to index' when there are no chunks", async () => {

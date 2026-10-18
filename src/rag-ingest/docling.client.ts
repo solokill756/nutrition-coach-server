@@ -29,6 +29,11 @@
  *   - include_images: true  (picture crops are generated; default already true)
  *   - do_ocr: false  (no server-side env switch exists for this default, so the
  *     client sends it on every request)
+ *   - page_range: [1, RAG_MAX_PDF_PAGES + 1]  (PDF only; multipart sends two
+ *     repeated `page_range` fields). Verified live: the result's `pages` map then
+ *     holds only the converted pages; no total page count is returned.
+ * docker-compose.rag.yml keeps DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT at or below
+ * DOCLING_TIMEOUT_MS / 1000 so the server never outlives a task the client gave up on.
  *
  * Response: { status: "success" | "partial_success" | "failure",
  *   document: { filename, json_content }, errors: [{ error_message, category,
@@ -289,13 +294,27 @@ export class DoclingClient {
     return mapDoclingDocument(this.jsonContent(data, true), url);
   }
 
-  async convertPdf(buffer: Buffer, filename: string): Promise<ExtractedDocument> {
+  /**
+   * `maxPages` caps the conversion at maxPages + 1 pages (docling-serve `page_range`, 1-based,
+   * sent as two repeated multipart fields). The result then has at most maxPages + 1 pages,
+   * so a pageCount above maxPages means "the PDF is over the limit"; docling-serve does not
+   * report the real total page count.
+   */
+  async convertPdf(
+    buffer: Buffer,
+    filename: string,
+    opts: { maxPages?: number } = {},
+  ): Promise<ExtractedDocument> {
     const form = new FormData();
     form.append('files', new Blob([new Uint8Array(buffer)], { type: 'application/pdf' }), filename);
     form.append('to_formats', 'json');
     form.append('image_export_mode', 'embedded');
     form.append('include_images', 'true');
     form.append('do_ocr', 'false');
+    if (opts.maxPages !== undefined && opts.maxPages > 0) {
+      form.append('page_range', '1');
+      form.append('page_range', String(opts.maxPages + 1));
+    }
     const data = await this.runTask('/v1/convert/file/async', form, false);
     // Fallback title matches the upload placeholder title, so it does not change to "<name>.pdf" after ingest.
     return mapDoclingDocument(this.jsonContent(data, false), filename.replace(/\.pdf$/i, ''));

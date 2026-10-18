@@ -395,6 +395,16 @@ describe('DoclingClient (async API)', () => {
     expect(form.get('image_export_mode')).toBe('embedded');
     expect(form.get('to_formats')).toBe('json');
     expect((form.get('files') as File).name).toBe('energy.pdf');
+    expect(form.getAll('page_range')).toEqual([]);
+  });
+
+  it('convertPdf: caps the conversion at maxPages + 1 pages via page_range', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], pdfResponse);
+    await settle(client.convertPdf(Buffer.from('%PDF-1.4'), 'big.pdf', { maxPages: 300 }));
+    const form = mockedAxios.post.mock.calls[0][1] as FormData;
+    // docling-serve v1.37.0 multipart: page_range is a [from, to] pair sent as two repeated fields.
+    expect(form.getAll('page_range')).toEqual(['1', '301']);
   });
 
   it('convertPdf: a PDF without a title item keeps the upload title (no ".pdf" appended after ingest)', async () => {

@@ -106,11 +106,12 @@ export class RagIngestPipeline {
       return;
     }
     const isPdf = record.sourceType === "pdf";
-    const extracted = await this.extract(record, isPdf);
-
     const maxPages = Number(this.config.get<string>("RAG_MAX_PDF_PAGES")) || DEFAULT_MAX_PDF_PAGES;
+    const extracted = await this.extract(record, isPdf, maxPages);
+
+    // Docling converts at most maxPages + 1 pages, so reaching max + 1 means the PDF is over the limit.
     if (isPdf && extracted.pageCount !== undefined && extracted.pageCount > maxPages) {
-      throw new PipelineError(`PDF has ${extracted.pageCount} pages; the limit is ${maxPages}`);
+      throw new PipelineError(`PDF has more than ${maxPages} pages; the limit is ${maxPages}`);
     }
     const textWords = extracted.blocks.reduce(
       (sum, b) => (b.kind === "heading" || b.kind === "paragraph" ? sum + countWords(b.text) : sum),
@@ -207,13 +208,14 @@ export class RagIngestPipeline {
 
   private async extract(
     record: { sourceUrl: string | null; filePath: string | null; originalFilename: string | null },
-    isPdf: boolean
+    isPdf: boolean,
+    maxPages: number
   ): Promise<ExtractedDocument> {
     try {
       if (isPdf) {
         if (!record.filePath) throw new PipelineError("Unexpected error: the PDF file is missing");
         const buffer = await this.files.readFile(record.filePath);
-        return await this.docling.convertPdf(buffer, record.originalFilename || "document.pdf");
+        return await this.docling.convertPdf(buffer, record.originalFilename || "document.pdf", { maxPages });
       }
       if (!record.sourceUrl) throw new PipelineError("Unexpected error: the document has no source URL");
       return await this.docling.convertUrl(record.sourceUrl);

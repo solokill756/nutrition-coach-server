@@ -107,6 +107,10 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    docker compose -f docker-compose.rag.yml up -d
    ```
 
+   The compose file sets `DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT` and `DOCLING_SERVE_MAX_SYNC_WAIT` to `3500` seconds.
+   Keep both at or below `DOCLING_TIMEOUT_MS / 1000` (default 3600). docling-serve does not cancel a conversion the
+   API server gave up on, so with one worker a higher server cap lets an abandoned conversion block the next job.
+
 3. If the database still has the old `rag_embeddings` table with `vector(768)`, the server logs
    `rag_embeddings.embedding has dimension 768 but RAG_EMBEDDING_DIM=1024` at startup. Drop the table and restart
    the server, which recreates it as `vector(1024)`. The old embeddings are not needed, because the old corpus was
@@ -128,7 +132,7 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    | `FOOD_EMBEDDING_MODEL` | `nomic-embed-text` | Food semantic search model (unchanged) |
    | `POSTGRES_SYNC_EMBEDDINGS_ON_BOOT` | `false` | The ingest worker owns RAG embeddings now |
    | `DOCLING_URL` | `http://localhost:5001` | docling-serve base URL |
-   | `DOCLING_TIMEOUT_MS` | `3600000` | Deadline for one document conversion |
+   | `DOCLING_TIMEOUT_MS` | `3600000` | Deadline for one document conversion. Keep the compose `DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT` (seconds) at or below this value / 1000 |
    | `RAG_STORAGE_DIR` | `./storage/rag` | Uploaded PDFs and extracted images |
    | `TYPESAFE_API_KEY` | (empty) | Jev key for chunk tagging |
    | `TYPESAFE_API_URL` | `https://api.typesafe.ai/v1` | Jev API |
@@ -138,7 +142,7 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    | `GEMINI_VISION_MODEL` | (empty = `GEMINI_MODEL`) | Model for image transcription |
    | `RAG_INGEST_POLL_MS` | `5000` | Worker poll interval |
    | `RAG_INGEST_WORKER_ENABLED` | `true` | Set `false` to stop picking up jobs |
-   | `RAG_MAX_PDF_PAGES` | `300` | PDFs with more pages fail with a clear error |
+   | `RAG_MAX_PDF_PAGES` | `300` | PDFs with more pages fail with a clear error. Docling converts at most this + 1 pages, so an over-limit PDF fails fast |
 
 6. When the server runs in Docker, mount `RAG_STORAGE_DIR` as a volume. It holds the source PDFs and the images
    that the admin page shows next to image chunks, so it must not live inside the image or the container layer:

@@ -3,13 +3,15 @@ import { UserNutritionalThresholdEntity } from "../nutrition/entities/user-nutri
 
 function threshold(
   nutrient: string,
-  options: { min?: number | null; max?: number | null; unit?: string } = {},
+  options: { min?: number | null; max?: number | null; unit?: string; origin?: string; sourceConditionKey?: string | null } = {},
 ): UserNutritionalThresholdEntity {
   return {
     nutrient,
     minAmount: options.min ?? null,
     maxAmount: options.max ?? null,
     unit: options.unit ?? "g",
+    origin: options.origin,
+    sourceConditionKey: options.sourceConditionKey,
   } as UserNutritionalThresholdEntity;
 }
 
@@ -27,6 +29,7 @@ function totals(overrides: Partial<DashboardDailyTotals> = {}): DashboardDailyTo
     potassium: 4000,
     calcium: 800,
     iron: 12,
+    phosphorus: 500,
     ...overrides,
   };
 }
@@ -159,30 +162,42 @@ describe("DashboardAlertService", () => {
     ]);
   });
 
-  it("creates warning alerts for calcium and iron below minimum targets", () => {
-    const alerts = service.buildDailyAlerts(
-      "2026-05-22",
-      totals({ calcium: 600, iron: 8 }),
-      [
-        threshold("calcium", { min: 1000, unit: "mg" }),
-        threshold("iron", { min: 18, unit: "mg" }),
-      ],
-    );
+  it("does not alert on micronutrients below their minimum", () => {
+    expect(service.buildDailyAlerts("2026-05-22", totals({ calcium: 600, iron: 8 }), [
+      threshold("calcium", { min: 1000, unit: "mg" }),
+      threshold("iron", { min: 18, unit: "mg" }),
+      threshold("vitaminC", { min: 90, unit: "mg" }),
+    ])).toEqual([]);
+  });
 
-    expect(alerts).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          nutrientType: "calcium",
-          severity: "warning",
-          title: "Low Calcium",
-        }),
-        expect.objectContaining({
-          nutrientType: "iron",
-          severity: "warning",
-          title: "Low Iron",
-        }),
-      ]),
-    );
+  it("creates a High Protein alert when the max comes from a condition rule", () => {
+    const alerts = service.buildDailyAlerts("2026-05-22", totals({ protein: 80 }), [
+      threshold("protein", { max: 70, unit: "g", origin: "admin_rule", sourceConditionKey: "kidney_disease" }),
+    ]);
+    expect(alerts).toEqual([expect.objectContaining({
+      id: "2026-05-22:protein:max", severity: "critical", title: "High Protein", limit: 70,
+    })]);
+  });
+
+  it("ignores the system protein max but still warns below the protein min", () => {
+    expect(service.buildDailyAlerts("2026-05-22", totals({ protein: 130 }), [
+      threshold("protein", { min: 90, max: 112, unit: "g", origin: "system" }),
+    ])).toEqual([]);
+    expect(service.buildDailyAlerts("2026-05-22", totals({ protein: 50 }), [
+      threshold("protein", { min: 90, max: 112, unit: "g", origin: "system" }),
+    ])).toEqual([expect.objectContaining({ id: "2026-05-22:protein:min", title: "Low Protein" })]);
+  });
+
+  it("creates a High Phosphorus alert above the max", () => {
+    expect(service.buildDailyAlerts("2026-05-22", totals({ phosphorus: 900 }), [
+      threshold("phosphorus", { max: 800, unit: "mg", origin: "admin_rule", sourceConditionKey: "kidney_disease" }),
+    ])).toEqual([expect.objectContaining({ id: "2026-05-22:phosphorus:max", title: "High Phosphorus", unit: "mg" })]);
+  });
+
+  it("does not alert when phosphorus is below the system min", () => {
+    expect(service.buildDailyAlerts("2026-05-22", totals({ phosphorus: 300 }), [
+      threshold("phosphorus", { min: 700, unit: "mg", origin: "system" }),
+    ])).toEqual([]);
   });
 
   it("normalizes saturated fat threshold names", () => {

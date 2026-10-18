@@ -51,6 +51,7 @@ type AlertRule = {
   nutrientType: keyof DashboardDailyTotals;
   thresholdKey: string;
   label: string;
+  conditionOnly?: boolean;
 };
 
 type AlertDirection = "max" | "min";
@@ -63,20 +64,14 @@ const MAX_ALERT_RULES: AlertRule[] = [
   { nutrientType: "sodium", thresholdKey: "sodium", label: "Sodium" },
   { nutrientType: "saturatedFat", thresholdKey: "saturatedfat", label: "Saturated fat" },
   { nutrientType: "cholesterol", thresholdKey: "cholesterol", label: "Cholesterol" },
+  { nutrientType: "protein", thresholdKey: "protein", label: "Protein", conditionOnly: true },
+  { nutrientType: "phosphorus", thresholdKey: "phosphorus", label: "Phosphorus" },
 ];
 
 const MIN_ALERT_RULES: AlertRule[] = [
   { nutrientType: "protein", thresholdKey: "protein", label: "Protein" },
   { nutrientType: "fiber", thresholdKey: "fiber", label: "Fiber" },
   { nutrientType: "potassium", thresholdKey: "potassium", label: "Potassium" },
-  { nutrientType: "calcium", thresholdKey: "calcium", label: "Calcium" },
-  { nutrientType: "iron", thresholdKey: "iron", label: "Iron" },
-  { nutrientType: "magnesium", thresholdKey: "magnesium", label: "Magnesium" },
-  { nutrientType: "zinc", thresholdKey: "zinc", label: "Zinc" },
-  { nutrientType: "vitaminC", thresholdKey: "vitaminc", label: "Vitamin C" },
-  { nutrientType: "vitaminB6", thresholdKey: "vitaminb6", label: "Vitamin B6" },
-  { nutrientType: "vitaminB12", thresholdKey: "vitaminb12", label: "Vitamin B12" },
-  { nutrientType: "folate", thresholdKey: "folate", label: "Folate" },
 ];
 
 const NUTRIENT_PRIORITY = new Map<string, number>([
@@ -171,6 +166,9 @@ export class DashboardAlertService implements OnModuleInit {
     totals: DashboardDailyTotals,
     threshold: UserNutritionalThresholdEntity | undefined,
   ): DashboardAlert | null {
+    if (rule.conditionOnly && !this.isConditionThreshold(threshold)) {
+      return null;
+    }
     const current = totals[rule.nutrientType];
     const limit = direction === "max" ? threshold?.maxAmount : threshold?.minAmount;
     if (limit == null || !Number.isFinite(limit) || limit <= 0 || !Number.isFinite(current)) {
@@ -201,6 +199,10 @@ export class DashboardAlertService implements OnModuleInit {
       percent,
       isRead: false,
     };
+  }
+
+  private isConditionThreshold(t: UserNutritionalThresholdEntity | undefined): boolean {
+    return t?.origin === "admin_rule" || t?.sourceConditionKey != null;
   }
 
   private indexThresholds(

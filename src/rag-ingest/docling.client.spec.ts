@@ -297,148 +297,244 @@ describe('mapDoclingDocument tolerance', () => {
   });
 });
 
-describe('DoclingClient', () => {
-  const config = { get: (_k: string) => undefined } as any;
-  const client = new DoclingClient(config);
+describe('DoclingClient (async API)', () => {
+  const cfg = (env: Record<string, string> = {}) =>
+    ({ get: (k: string) => env[k] }) as any;
+  const client = new DoclingClient(cfg());
 
-  beforeEach(() => jest.resetAllMocks());
+  const taskStatus = (task_status: string, extra: object = {}) => ({
+    status: 200,
+    data: { task_id: 't1', task_type: 'convert', task_status, ...extra },
+  });
 
-  it('convertUrl posts an http source with OCR off and embedded images, and maps the result', async () => {
-    mockedAxios.post.mockResolvedValue({ status: 200, data: htmlResponse });
-    const doc = await client.convertUrl(
-      'https://www.who.int/news-room/fact-sheets/detail/healthy-diet',
+  /** axios.get answers: poll statuses in order (last one repeats), then the result. */
+  function mockGets(polls: any[], result?: any) {
+    let i = 0;
+    mockedAxios.get.mockImplementation(async (url: string) => {
+      if (url.includes('/v1/status/poll/')) {
+        const p = polls[Math.min(i++, polls.length - 1)];
+        if (p instanceof Error) throw p;
+        return p;
+      }
+      if (url.includes('/v1/result/')) return { status: 200, data: result };
+      throw new Error(`unexpected GET ${url}`);
+    });
+  }
+
+  /** Run a client call under fake timers, advancing virtual time until it settles. */
+  async function settle<T>(p: Promise<T>, ms = 60_000): Promise<T> {
+    const guarded = p.then(
+      (v) => ({ ok: true as const, v }),
+      (e) => ({ ok: false as const, e }),
+    );
+    await jest.advanceTimersByTimeAsync(ms);
+    const r = await guarded;
+    if (!r.ok) throw r.e;
+    return r.v;
+  }
+
+  beforeEach(() => {
+    jest.resetAllMocks();
+    jest.useFakeTimers();
+  });
+  afterEach(() => jest.useRealTimers());
+
+  it('convertUrl: submit -> pending -> success, polling every 3 s, then maps the result', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('pending'), taskStatus('started'), taskStatus('success')], htmlResponse);
+    const doc = await settle(
+      client.convertUrl('https://www.who.int/news-room/fact-sheets/detail/healthy-diet'),
     );
     expect(doc.title).toBe('Healthy diet');
-    const [url, body, opts] = mockedAxios.post.mock.calls[0] as any[];
-    expect(url).toBe('http://localhost:5001/v1/convert/source');
+
+    const [url, body] = mockedAxios.post.mock.calls[0] as any[];
+    expect(url).toBe('http://localhost:5001/v1/convert/source/async');
     expect(body.sources).toEqual([
-      {
-        kind: 'http',
-        url: 'https://www.who.int/news-room/fact-sheets/detail/healthy-diet',
-      },
+      { kind: 'http', url: 'https://www.who.int/news-room/fact-sheets/detail/healthy-diet' },
     ]);
     expect(body.options).toMatchObject({
       to_formats: ['json'],
       image_export_mode: 'embedded',
       do_ocr: false,
     });
-    expect(opts.timeout).toBe(2 * 60 * 1000);
+    const gets = mockedAxios.get.mock.calls.map((c) => c[0]);
+    expect(gets).toEqual([
+      'http://localhost:5001/v1/status/poll/t1',
+      'http://localhost:5001/v1/status/poll/t1',
+      'http://localhost:5001/v1/status/poll/t1',
+      'http://localhost:5001/v1/result/t1',
+    ]);
   });
 
-  it('convertPdf uploads multipart with OCR off and uses the filename as fallback title', async () => {
-    mockedAxios.post.mockResolvedValue({ status: 200, data: pdfResponse });
-    const doc = await client.convertPdf(Buffer.from('%PDF-1.4'), 'energy.pdf');
+  it('polls at a 3000 ms cadence', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('pending')]);
+    const p = client.convertUrl('https://example.org').catch(() => undefined);
+    await jest.advanceTimersByTimeAsync(0);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(2999);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(1);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(2);
+    await jest.advanceTimersByTimeAsync(3000);
+    expect(mockedAxios.get).toHaveBeenCalledTimes(3);
+    jest.clearAllTimers();
+    void p;
+  });
+
+  it('convertPdf: uploads multipart to the async endpoint with OCR off, filename as fallback title', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], pdfResponse);
+    const doc = await settle(client.convertPdf(Buffer.from('%PDF-1.4'), 'energy.pdf'));
     expect(doc.title).toBe('energy.pdf');
-    const [url, form, opts] = mockedAxios.post.mock.calls[0] as any[];
-    expect(url).toBe('http://localhost:5001/v1/convert/file');
+    const [url, form] = mockedAxios.post.mock.calls[0] as any[];
+    expect(url).toBe('http://localhost:5001/v1/convert/file/async');
     expect(form).toBeInstanceOf(FormData);
     expect(form.get('do_ocr')).toBe('false');
     expect(form.get('image_export_mode')).toBe('embedded');
     expect(form.get('to_formats')).toBe('json');
     expect((form.get('files') as File).name).toBe('energy.pdf');
-    expect(opts.timeout).toBe(10 * 60 * 1000);
   });
 
   it('honours DOCLING_URL and strips a trailing slash', async () => {
-    const c = new DoclingClient({
-      get: (k: string) => (k === 'DOCLING_URL' ? 'http://docling:5001/' : undefined),
-    } as any);
-    mockedAxios.post.mockResolvedValue({ status: 200, data: htmlResponse });
-    await c.convertUrl('https://example.org');
-    expect(mockedAxios.post.mock.calls[0][0]).toBe(
-      'http://docling:5001/v1/convert/source',
-    );
+    const c = new DoclingClient(cfg({ DOCLING_URL: 'http://docling:5001/' }));
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], htmlResponse);
+    await settle(c.convertUrl('https://example.org'));
+    expect(mockedAxios.post.mock.calls[0][0]).toBe('http://docling:5001/v1/convert/source/async');
   });
 
-  it('maps a refused connection to UNAVAILABLE', async () => {
-    mockedAxios.post.mockRejectedValue(
-      Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5001'), {
-        code: 'ECONNREFUSED',
+  it('submit -> failure maps to CONVERT_FAILED', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('failure', { error_message: 'worker crashed' })]);
+    await expect(settle(client.convertPdf(Buffer.from('x'), 'a.pdf'))).rejects.toMatchObject({
+      code: 'CONVERT_FAILED',
+      message: expect.stringContaining('worker crashed'),
+    });
+  });
+
+  it('task failure for a URL whose download failed maps to FETCH_FAILED', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([
+      taskStatus('failure', {
+        error_message: '404 Client Error: Not Found for url: https://www.who.int/nope',
       }),
-    );
-    const err = await client.convertUrl('https://example.org').catch((e) => e);
+    ]);
+    await expect(settle(client.convertUrl('https://www.who.int/nope'))).rejects.toMatchObject({
+      code: 'FETCH_FAILED',
+    });
+  });
+
+  it('a successful task whose result reports a failed conversion maps correctly', async () => {
+    const failure = (message: string, category: string) => ({
+      status: 200,
+      data: undefined as any,
+      body: {
+        status: 'failure',
+        document: { json_content: null },
+        errors: [{ error_message: message, category }],
+      },
+    });
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+
+    mockGets([taskStatus('success')], failure('URL is not allowed: https://x.invalid/a', 'source_unavailable').body);
+    await expect(settle(client.convertUrl('https://x.invalid/a'))).rejects.toMatchObject({
+      code: 'FETCH_FAILED',
+    });
+
+    mockGets([taskStatus('success')], failure('docling-parse could not load document', 'backend_failure').body);
+    await expect(settle(client.convertPdf(Buffer.from('x'), 'bad.pdf'))).rejects.toMatchObject({
+      code: 'CONVERT_FAILED',
+    });
+
+    mockGets([taskStatus('success')], { status: 'success', document: { json_content: null }, errors: [] });
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
+      code: 'CONVERT_FAILED',
+    });
+  });
+
+  it('deadline exceeded maps to CONVERT_FAILED with a clear message', async () => {
+    const c = new DoclingClient(cfg({ DOCLING_TIMEOUT_MS: '120000' }));
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('started')]);
+    const err = await settle(c.convertPdf(Buffer.from('x'), 'big.pdf'), 300_000).catch((e) => e);
+    expect(err).toBeInstanceOf(DoclingError);
+    expect(err.code).toBe('CONVERT_FAILED');
+    expect(err.message).toBe('Document conversion timed out after 2 minutes');
+    // gave up around the deadline, not long after it
+    expect(mockedAxios.get.mock.calls.length).toBeLessThanOrEqual(41);
+  });
+
+  it('default deadline is 60 minutes', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('started')]);
+    const p = client.convertPdf(Buffer.from('x'), 'big.pdf');
+    const guarded = p.catch((e) => e);
+    await jest.advanceTimersByTimeAsync(59 * 60_000);
+    expect(mockedAxios.get.mock.calls.length).toBeGreaterThan(1000);
+    await jest.advanceTimersByTimeAsync(2 * 60_000);
+    const err = await guarded;
+    expect(err.message).toBe('Document conversion timed out after 60 minutes');
+  });
+
+  it('ECONNREFUSED maps to UNAVAILABLE (on submit and while polling)', async () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:5001'), {
+      code: 'ECONNREFUSED',
+    });
+    mockedAxios.post.mockRejectedValue(refused);
+    const err = await settle(client.convertUrl('https://example.org')).catch((e) => e);
     expect(err).toBeInstanceOf(DoclingError);
     expect(err.code).toBe('UNAVAILABLE');
-  });
 
-  it('maps a timeout to UNAVAILABLE', async () => {
-    mockedAxios.post.mockRejectedValue(
-      Object.assign(new Error('timeout of 120000ms exceeded'), {
-        code: 'ECONNABORTED',
-      }),
-    );
-    await expect(client.convertUrl('https://example.org')).rejects.toMatchObject({
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('pending'), refused]);
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
       code: 'UNAVAILABLE',
     });
   });
 
-  it('maps docling reporting a URL download failure to FETCH_FAILED', async () => {
-    mockedAxios.post.mockResolvedValue({
-      status: 200,
-      data: {
-        status: 'failure',
-        document: { json_content: null },
-        errors: [
-          {
-            error_message:
-              '404 Client Error: Not Found for url: https://www.who.int/nope',
-            category: 'policy',
-          },
-        ],
-      },
-    });
-    await expect(client.convertUrl('https://www.who.int/nope')).rejects.toMatchObject({
-      code: 'FETCH_FAILED',
-    });
-    mockedAxios.post.mockResolvedValue({
-      status: 200,
-      data: {
-        status: 'failure',
-        document: { json_content: null },
-        errors: [
-          {
-            error_message: 'URL is not allowed: https://nonexistent.invalid/x.pdf',
-            category: 'source_unavailable',
-          },
-        ],
-      },
-    });
-    await expect(client.convertUrl('https://nonexistent.invalid/x.pdf')).rejects.toMatchObject({
-      code: 'FETCH_FAILED',
+  it.each(['ENOTFOUND', 'ECONNRESET', 'EAI_AGAIN'])('%s maps to UNAVAILABLE', async (code) => {
+    mockedAxios.post.mockRejectedValue(Object.assign(new Error(code), { code }));
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
+      code: 'UNAVAILABLE',
     });
   });
 
-  it('maps a conversion failure on an uploaded file to CONVERT_FAILED', async () => {
-    mockedAxios.post.mockResolvedValue({
-      status: 200,
-      data: {
-        status: 'failure',
-        document: { json_content: null },
-        errors: [
-          { error_message: 'docling-parse could not load document', category: 'backend_failure' },
-        ],
-      },
-    });
-    await expect(client.convertPdf(Buffer.from('x'), 'bad.pdf')).rejects.toMatchObject({
-      code: 'CONVERT_FAILED',
-    });
-  });
-
-  it('maps HTTP 5xx and a missing json_content to CONVERT_FAILED', async () => {
+  it('HTTP 504 maps to CONVERT_FAILED, not UNAVAILABLE', async () => {
     mockedAxios.post.mockRejectedValue(
-      Object.assign(new Error('Request failed with status code 500'), {
+      Object.assign(new Error('Request failed with status code 504'), {
         isAxiosError: true,
-        response: { status: 500, data: { detail: 'boom' } },
+        response: { status: 504, data: {} },
       }),
     );
-    await expect(client.convertUrl('https://example.org')).rejects.toMatchObject({
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
       code: 'CONVERT_FAILED',
     });
-    mockedAxios.post.mockResolvedValue({
-      status: 200,
-      data: { status: 'success', document: { json_content: null }, errors: [] },
+  });
+
+  it('axios timeouts and other HTTP errors map to CONVERT_FAILED', async () => {
+    mockedAxios.post.mockRejectedValue(
+      Object.assign(new Error('timeout of 300000ms exceeded'), { code: 'ECONNABORTED' }),
+    );
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
+      code: 'CONVERT_FAILED',
     });
-    await expect(client.convertUrl('https://example.org')).rejects.toMatchObject({
+    mockedAxios.post.mockRejectedValue(
+      Object.assign(new Error('Request failed with status code 500'), {
+        response: { status: 500 },
+      }),
+    );
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
+      code: 'CONVERT_FAILED',
+    });
+  });
+
+  it('a lost task (poll returns 404) maps to CONVERT_FAILED', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([
+      Object.assign(new Error('Request failed with status code 404'), { response: { status: 404 } }),
+    ]);
+    await expect(settle(client.convertUrl('https://example.org'))).rejects.toMatchObject({
       code: 'CONVERT_FAILED',
     });
   });

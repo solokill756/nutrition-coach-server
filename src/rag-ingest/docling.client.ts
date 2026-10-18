@@ -5,12 +5,22 @@
  * (DoclingDocument schema version 1.10.0). Contract below was read from that
  * container's /openapi.json and verified against real conversions.
  *
- * Endpoints (both answer HTTP 200 even when the conversion failed; check the
- * body's `status` / `errors[]` instead):
- *   - POST /v1/convert/source  application/json
- *       { sources: [{ kind: "http", url }], options: {...} }
- *   - POST /v1/convert/file    multipart/form-data
- *       field `files` (the PDF) + one form field per option below
+ * The ASYNC API is used (the sync endpoints give up after ~120 s with a 504):
+ *   1. submit  POST /v1/convert/source/async  application/json
+ *                { sources: [{ kind: "http", url }], options: {...} }
+ *              POST /v1/convert/file/async    multipart/form-data
+ *                field `files` (the PDF) + one form field per option below
+ *              -> TaskStatusResponse { task_id, task_status, ... }
+ *   2. poll    GET /v1/status/poll/{task_id}  every 3 s until task_status is
+ *              success | partial_success (-> step 3) or failure | skipped
+ *              (-> error). task_status is also "success" when the conversion
+ *              itself failed; that failure is in the result body.
+ *   3. result  GET /v1/result/{task_id} -> same body as the sync endpoints.
+ * Overall deadline: DOCLING_TIMEOUT_MS (default 60 min), then CONVERT_FAILED.
+ * Only connection-level errors (ECONNREFUSED/ENOTFOUND/ECONNRESET/EAI_AGAIN)
+ * are UNAVAILABLE; 504, axios timeouts and the rest are CONVERT_FAILED.
+ *
+ * Result body (HTTP 200 even when the conversion failed; check `status` / `errors[]`):
  *
  * Options used on both endpoints:
  *   - to_formats: ["json"]  (multipart: to_formats=json) -> DoclingDocument is
@@ -55,8 +65,10 @@ export class DoclingError extends Error {
   }
 }
 
-const PDF_TIMEOUT_MS = 10 * 60 * 1000;
-const URL_TIMEOUT_MS = 2 * 60 * 1000;
+const DEFAULT_DEADLINE_MS = 3_600_000; // DOCLING_TIMEOUT_MS: whole conversion, 60 min
+const POLL_INTERVAL_MS = 3000;
+const REQUEST_TIMEOUT_MS = 5 * 60 * 1000; // a single submit / poll / result HTTP call
+const CONNECTION_ERROR_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'EAI_AGAIN']);
 const CONTEXT_MAX_CHARS = 300;
 const DEFAULT_DOCLING_URL = 'http://localhost:5001';
 
@@ -255,25 +267,25 @@ const FETCH_MESSAGE =
 export class DoclingClient {
   private readonly baseUrl: string;
 
+  private readonly deadlineMs: number;
+
   constructor(config: ConfigService) {
     const url = config.get<string>('DOCLING_URL') || DEFAULT_DOCLING_URL;
     this.baseUrl = url.replace(/\/+$/, '');
+    const t = Number(config.get<string>('DOCLING_TIMEOUT_MS'));
+    this.deadlineMs = Number.isFinite(t) && t > 0 ? t : DEFAULT_DEADLINE_MS;
   }
 
   async convertUrl(url: string): Promise<ExtractedDocument> {
-    const data = await this.post(
-      '/v1/convert/source',
-      {
-        sources: [{ kind: 'http', url }],
-        options: {
-          to_formats: ['json'],
-          image_export_mode: 'embedded',
-          include_images: true,
-          do_ocr: false,
-        },
+    const data = await this.runTask('/v1/convert/source/async', {
+      sources: [{ kind: 'http', url }],
+      options: {
+        to_formats: ['json'],
+        image_export_mode: 'embedded',
+        include_images: true,
+        do_ocr: false,
       },
-      URL_TIMEOUT_MS,
-    );
+    }, true);
     return mapDoclingDocument(this.jsonContent(data, true), url);
   }
 
@@ -284,28 +296,67 @@ export class DoclingClient {
     form.append('image_export_mode', 'embedded');
     form.append('include_images', 'true');
     form.append('do_ocr', 'false');
-    const data = await this.post('/v1/convert/file', form, PDF_TIMEOUT_MS);
+    const data = await this.runTask('/v1/convert/file/async', form, false);
     return mapDoclingDocument(this.jsonContent(data, false), filename);
   }
 
-  private async post(path: string, body: unknown, timeout: number): Promise<unknown> {
-    try {
-      const res = await axios.post(`${this.baseUrl}${path}`, body, {
-        timeout,
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-      });
-      return res.data;
-    } catch (err) {
-      const e = err as { message?: string; response?: { status?: number } };
-      const status = e.response?.status;
-      if (status === undefined || status === 502 || status === 503 || status === 504) {
+  /** Submit an async job, poll until it finishes, return the result body. */
+  private async runTask(submitPath: string, body: unknown, isUrlSource: boolean): Promise<unknown> {
+    const startedAt = Date.now();
+    const submitted = await this.request('post', submitPath, body);
+    const taskId = isObj(submitted) ? submitted.task_id : undefined;
+    if (typeof taskId !== 'string' || taskId === '') {
+      throw new DoclingError('CONVERT_FAILED', 'docling-serve did not return a task id');
+    }
+    for (;;) {
+      const status = await this.request('get', `/v1/status/poll/${encodeURIComponent(taskId)}`);
+      const s = isObj(status) ? status.task_status : undefined;
+      if (s === 'success' || s === 'partial_success') {
+        return this.request('get', `/v1/result/${encodeURIComponent(taskId)}`);
+      }
+      if (s === 'failure' || s === 'skipped') {
+        const message = String(
+          (isObj(status) && (status.error_message ?? status.failure?.message)) ||
+            `docling-serve task ${s}`,
+        );
         throw new DoclingError(
-          'UNAVAILABLE',
-          `docling-serve unavailable at ${this.baseUrl}: ${e.message ?? 'no response'}`,
+          isUrlSource && FETCH_MESSAGE.test(message) ? 'FETCH_FAILED' : 'CONVERT_FAILED',
+          message,
         );
       }
-      throw new DoclingError('CONVERT_FAILED', `docling-serve HTTP ${status}: ${e.message ?? ''}`);
+      if (Date.now() - startedAt + POLL_INTERVAL_MS >= this.deadlineMs) {
+        throw new DoclingError(
+          'CONVERT_FAILED',
+          `Document conversion timed out after ${Math.round(this.deadlineMs / 60000)} minutes`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+    }
+  }
+
+  private async request(method: 'get' | 'post', path: string, body?: unknown): Promise<unknown> {
+    const url = `${this.baseUrl}${path}`;
+    const opts = {
+      timeout: REQUEST_TIMEOUT_MS,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+    };
+    try {
+      const res = method === 'post' ? await axios.post(url, body, opts) : await axios.get(url, opts);
+      return res.data;
+    } catch (err) {
+      const e = err as { message?: string; code?: string; response?: { status?: number } };
+      if (e.code && CONNECTION_ERROR_CODES.has(e.code)) {
+        throw new DoclingError(
+          'UNAVAILABLE',
+          `docling-serve unavailable at ${this.baseUrl}: ${e.message ?? e.code}`,
+        );
+      }
+      const status = e.response?.status;
+      throw new DoclingError(
+        'CONVERT_FAILED',
+        status ? `docling-serve HTTP ${status}: ${e.message ?? ''}` : `docling-serve request failed: ${e.message ?? ''}`,
+      );
     }
   }
 

@@ -100,6 +100,8 @@ function makeRecipeCtx(overrides: any = {}) {
       totalSaturatedFat: 0,
       totalCholesterol: 0,
       totalPotassium: 0,
+      totalFiber: 0,
+      totalPhosphorus: 0,
     },
     dailyTargetCalories: 2000,
     remaining: {
@@ -112,6 +114,8 @@ function makeRecipeCtx(overrides: any = {}) {
       saturatedFatG: 20,
       cholesterolMg: 300,
       potassiumMgMinRemaining: 0,
+      fiberGMinRemaining: null,
+      phosphorusMg: null,
     },
     ...overrides,
   };
@@ -121,6 +125,37 @@ describe("RecipeBuilderService", () => {
   it("parseRecipeAiResponse throws for invalid json", () => {
     const { service } = createService();
     expect(() => (service as any).parseRecipeAiResponse("xxx")).toThrow(BadGatewayException);
+  });
+
+  it("parseRecipeAiResponse turns the model's written times into whole minutes", () => {
+    const { service } = createService();
+    const { recipe } = (service as any).parseRecipeAiResponse(
+      JSON.stringify({
+        recipe: {
+          name: "Apple porridge",
+          preparationTime: "10 minutes",
+          cookingTime: "1 hour",
+          steps: [
+            { order: 1, instruction: "Dice.", duration: "2 minutes" },
+            { order: 2, instruction: "Simmer.", duration: 5 },
+            { order: 3, instruction: "Serve.", duration: "until thick" },
+          ],
+        },
+      }),
+    );
+    expect(recipe.preparationTime).toBe(10);
+    expect(recipe.cookingTime).toBe(60);
+    expect(recipe.steps.map((s: { duration?: number }) => s.duration)).toEqual([2, 5, undefined]);
+  });
+
+  it("parseRecipeAiResponse defaults unreadable recipe times to 0", () => {
+    const { service } = createService();
+    const { recipe } = (service as any).parseRecipeAiResponse(
+      JSON.stringify({ recipe: { name: "X", preparationTime: "quick", steps: "none" } }),
+    );
+    expect(recipe.preparationTime).toBe(0);
+    expect(recipe.cookingTime).toBe(0);
+    expect(recipe.steps).toEqual([]);
   });
 
   it("safeParse returns object or empty", () => {
@@ -302,6 +337,35 @@ describe("RecipeBuilderService AI safeguards", () => {
         steps: expect.any(Array),
       }),
     });
+  });
+
+  it("passes the client tz offset to the recipe generation context", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(makeRecipeCtx());
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: {
+          name: "Chicken Bowl",
+          servings: 1,
+          ingredients: [{ foodId: 10, amount: 1 }],
+          steps: [{ order: 1, instruction: "cook" }],
+        },
+        recommendation: "",
+      }),
+    );
+
+    await service.generateRecipe({ mealSlot: "lunch", foodIds: [10] } as any, 1, -420);
+
+    expect(userContextService.assembleRecipeGenerationContext).toHaveBeenCalledWith(
+      1,
+      expect.any(String),
+      "lunch",
+      -420,
+    );
   });
 
   it("recalculates nutrition from food data instead of trusting raw AI placeholder", async () => {
@@ -487,5 +551,18 @@ describe("RecipeBuilderService meal targets and prompt", () => {
     );
     const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
     expect(user.content).toContain("Aim for ONE serving of this snack at about 200 kcal");
+  });
+
+  it("clampRecipeToRemainingBudgets scales for phosphorus", () => {
+    const { service } = createService();
+    const recipe: any = { ingredients: [{ amount_g: 100, amount: 1 }], nutritionPerServing: { calories: 100, phosphorusMg: 400 } };
+    const warnings: string[] = [];
+    expect((service as any).clampRecipeToRemainingBudgets(recipe, { phosphorusMg: 200 }, warnings)).toBe("adjusted");
+    expect(recipe.ingredients[0].amount_g).toBe(50);
+  });
+
+  it("verifyBudget warns when phosphorus still exceeds remaining", () => {
+    const { service } = createService();
+    expect((service as any).verifyBudget({ nutritionPerServing: { phosphorusMg: 400 } }, { phosphorusMg: 200 }, [])).toBe("warning");
   });
 });

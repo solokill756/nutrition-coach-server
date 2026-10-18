@@ -14,8 +14,10 @@ import {
   RecipeBuilderRequest,
   RecipeBuilderResponse,
   RecipeMealSlot,
+  RecipeStep,
   UpdateRecipeDto,
 } from "./dto/recipe.dto";
+import { minutesFrom } from "./ai-minutes";
 import { RetrievalService } from "../retrieval/retrieval.service";
 import { RAG_CONFIDENCE_THRESHOLD } from "../retrieval/rag-confidence";
 import { OllamaService } from "../ollama/ollama.service";
@@ -152,6 +154,7 @@ export class RecipeBuilderService {
       userId,
       dateKey,
       input.mealSlot,
+      tzOffsetMinutes,
     );
 
     const stapleIds = new Set(staples.map((f) => Number(f.id)));
@@ -258,6 +261,12 @@ export class RecipeBuilderService {
     }
     if (r.potassiumMgMinRemaining != null) {
       budgetLines.push(`Potassium target still needed today: ~${Math.round(r.potassiumMgMinRemaining)} mg.`);
+    }
+    if (r.fiberGMinRemaining != null) {
+      budgetLines.push(`Fiber target still needed today: ~${Math.round(r.fiberGMinRemaining * 10) / 10} g.`);
+    }
+    if (r.phosphorusMg != null) {
+      budgetLines.push(`Max phosphorus (mg) per serving: ~${Math.round(r.phosphorusMg)} mg remaining today.`);
     }
 
     const systemPrompt = RECIPE_PROMPTS.buildSystemPrompt(allowedIds, contextsToUse);
@@ -371,17 +380,7 @@ export class RecipeBuilderService {
       healthConditions: ctx.healthDetailed.map((h) => h.conditionName),
       thresholds: ctx.thresholds,
       recentHistory: ctx.recentHistory,
-      todaySummary: {
-        totalCalories: ctx.todayIntake.totalCalories,
-        totalSodium: ctx.todayIntake.totalSodium,
-        totalCarbs: ctx.todayIntake.totalCarbs,
-        totalProtein: ctx.todayIntake.totalProtein,
-        totalFat: ctx.todayIntake.totalFat,
-        totalSugar: ctx.todayIntake.totalSugar,
-        totalSaturatedFat: ctx.todayIntake.totalSaturatedFat,
-        totalCholesterol: ctx.todayIntake.totalCholesterol,
-        totalPotassium: ctx.todayIntake.totalPotassium,
-      },
+      todaySummary: { ...ctx.todayIntake },
     };
   }
 
@@ -508,6 +507,7 @@ export class RecipeBuilderService {
     considerCap(n.sugar, remaining.sugarG);
     considerCap(n.saturatedFat, remaining.saturatedFatG);
     considerCap(n.cholesterol, remaining.cholesterolMg);
+    considerCap(n.phosphorusMg, remaining.phosphorusMg);
 
     if (factor >= 0.999) {
       return "ok";
@@ -556,6 +556,7 @@ export class RecipeBuilderService {
     check("sugars", n.sugar, remaining.sugarG);
     check("saturated fat", n.saturatedFat, remaining.saturatedFatG);
     check("cholesterol", n.cholesterol, remaining.cholesterolMg);
+    check("phosphorus", n.phosphorusMg, remaining.phosphorusMg);
     return bad ? "warning" : "ok";
   }
 
@@ -1109,7 +1110,7 @@ export class RecipeBuilderService {
         throw new Error("Missing recipe object");
       }
       return {
-        recipe: parsed.recipe,
+        recipe: this.withWholeMinutes(parsed.recipe),
         alternativeRecipes: parsed.alternativeRecipes,
         recommendation: parsed.recommendation,
       };
@@ -1120,6 +1121,20 @@ export class RecipeBuilderService {
         message: "Recipe AI returned an invalid response. Please try again.",
       });
     }
+  }
+
+  /** The model writes times as text ("10 minutes"); the API promises whole minutes. */
+  private withWholeMinutes(recipe: Recipe): Recipe {
+    const steps: unknown[] = Array.isArray(recipe.steps) ? recipe.steps : [];
+    return {
+      ...recipe,
+      preparationTime: minutesFrom(recipe.preparationTime) ?? 0,
+      cookingTime: minutesFrom(recipe.cookingTime) ?? 0,
+      steps: steps.map((step) => {
+        const s = step as RecipeStep;
+        return { ...s, duration: minutesFrom(s.duration) ?? undefined };
+      }),
+    };
   }
 
   private async enrichRecipeWithRealNutrition(recipe: Recipe): Promise<Recipe> {

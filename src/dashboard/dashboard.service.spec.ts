@@ -128,6 +128,14 @@ describe("DashboardService AI suggestion", () => {
     warnSpy.mockRestore();
   });
 
+  it("adds healthNutrients and keeps macros and micronutrients", async () => {
+    const { service } = createService(jest.fn());
+    const result = await service.getTodayDashboard(1, "2026-05-22");
+    expect(result.healthNutrients.sodium).toEqual({ current: 2500, min: null, max: 1500, unit: "mg" });
+    expect(result.macros.protein).toBeDefined();
+    expect(result.micronutrients).toBeDefined();
+  });
+
   it("does not block the dashboard payload on the LLM suggestion", async () => {
     const { service, chat } = createService(
       jest.fn().mockResolvedValue('{"title":"Plan dinner","message":"Choose a low-sodium dinner and drink water with it."}'),

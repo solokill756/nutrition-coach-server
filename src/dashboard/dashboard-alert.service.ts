@@ -47,10 +47,42 @@ export type DashboardDailyTotals = {
   folate: number;
 };
 
+export type HealthNutrientKey =
+  | "fiber"
+  | "sugars"
+  | "sodium"
+  | "saturatedFat"
+  | "cholesterol"
+  | "potassium"
+  | "phosphorus";
+export type HealthNutrientValue = {
+  current: number;
+  min: number | null;
+  max: number | null;
+  unit: "g" | "mg";
+};
+export type DashboardHealthNutrients = Record<HealthNutrientKey, HealthNutrientValue>;
+
+const HEALTH_NUTRIENT_RULES: {
+  key: HealthNutrientKey;
+  direction: AlertDirection;
+  unit: "g" | "mg";
+  thresholdKey: string;
+}[] = [
+  { key: "fiber", direction: "min", unit: "g", thresholdKey: "fiber" },
+  { key: "sugars", direction: "max", unit: "g", thresholdKey: "sugars" },
+  { key: "sodium", direction: "max", unit: "mg", thresholdKey: "sodium" },
+  { key: "saturatedFat", direction: "max", unit: "g", thresholdKey: "saturatedfat" },
+  { key: "cholesterol", direction: "max", unit: "mg", thresholdKey: "cholesterol" },
+  { key: "potassium", direction: "min", unit: "mg", thresholdKey: "potassium" },
+  { key: "phosphorus", direction: "max", unit: "mg", thresholdKey: "phosphorus" },
+];
+
 type AlertRule = {
   nutrientType: keyof DashboardDailyTotals;
   thresholdKey: string;
   label: string;
+  conditionOnly?: boolean;
 };
 
 type AlertDirection = "max" | "min";
@@ -63,20 +95,14 @@ const MAX_ALERT_RULES: AlertRule[] = [
   { nutrientType: "sodium", thresholdKey: "sodium", label: "Sodium" },
   { nutrientType: "saturatedFat", thresholdKey: "saturatedfat", label: "Saturated fat" },
   { nutrientType: "cholesterol", thresholdKey: "cholesterol", label: "Cholesterol" },
+  { nutrientType: "protein", thresholdKey: "protein", label: "Protein", conditionOnly: true },
+  { nutrientType: "phosphorus", thresholdKey: "phosphorus", label: "Phosphorus" },
 ];
 
 const MIN_ALERT_RULES: AlertRule[] = [
   { nutrientType: "protein", thresholdKey: "protein", label: "Protein" },
   { nutrientType: "fiber", thresholdKey: "fiber", label: "Fiber" },
   { nutrientType: "potassium", thresholdKey: "potassium", label: "Potassium" },
-  { nutrientType: "calcium", thresholdKey: "calcium", label: "Calcium" },
-  { nutrientType: "iron", thresholdKey: "iron", label: "Iron" },
-  { nutrientType: "magnesium", thresholdKey: "magnesium", label: "Magnesium" },
-  { nutrientType: "zinc", thresholdKey: "zinc", label: "Zinc" },
-  { nutrientType: "vitaminC", thresholdKey: "vitaminc", label: "Vitamin C" },
-  { nutrientType: "vitaminB6", thresholdKey: "vitaminb6", label: "Vitamin B6" },
-  { nutrientType: "vitaminB12", thresholdKey: "vitaminb12", label: "Vitamin B12" },
-  { nutrientType: "folate", thresholdKey: "folate", label: "Folate" },
 ];
 
 const NUTRIENT_PRIORITY = new Map<string, number>([
@@ -171,6 +197,9 @@ export class DashboardAlertService implements OnModuleInit {
     totals: DashboardDailyTotals,
     threshold: UserNutritionalThresholdEntity | undefined,
   ): DashboardAlert | null {
+    if (rule.conditionOnly && !this.isConditionThreshold(threshold)) {
+      return null;
+    }
     const current = totals[rule.nutrientType];
     const limit = direction === "max" ? threshold?.maxAmount : threshold?.minAmount;
     if (limit == null || !Number.isFinite(limit) || limit <= 0 || !Number.isFinite(current)) {
@@ -201,6 +230,31 @@ export class DashboardAlertService implements OnModuleInit {
       percent,
       isRead: false,
     };
+  }
+
+  private isConditionThreshold(t: UserNutritionalThresholdEntity | undefined): boolean {
+    return t?.origin === "admin_rule";
+  }
+
+  buildHealthNutrients(
+    totals: DashboardDailyTotals,
+    thresholds: UserNutritionalThresholdEntity[],
+  ): DashboardHealthNutrients {
+    const thresholdByKey = this.indexThresholds(thresholds);
+    const result = {} as DashboardHealthNutrients;
+    for (const rule of HEALTH_NUTRIENT_RULES) {
+      const threshold = thresholdByKey.get(rule.thresholdKey);
+      const limit = rule.direction === "max" ? threshold?.maxAmount : threshold?.minAmount;
+      const bound = limit != null && Number.isFinite(limit) && limit > 0 ? this.roundValue(limit) : null;
+      const current = totals[rule.key];
+      result[rule.key] = {
+        current: Number.isFinite(current) ? this.roundValue(current) : 0,
+        min: rule.direction === "min" ? bound : null,
+        max: rule.direction === "max" ? bound : null,
+        unit: rule.unit,
+      };
+    }
+    return result;
   }
 
   private indexThresholds(

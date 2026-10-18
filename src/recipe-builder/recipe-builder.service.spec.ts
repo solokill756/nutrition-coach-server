@@ -339,6 +339,35 @@ describe("RecipeBuilderService AI safeguards", () => {
     });
   });
 
+  it("passes the client tz offset to the recipe generation context", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(makeRecipeCtx());
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: {
+          name: "Chicken Bowl",
+          servings: 1,
+          ingredients: [{ foodId: 10, amount: 1 }],
+          steps: [{ order: 1, instruction: "cook" }],
+        },
+        recommendation: "",
+      }),
+    );
+
+    await service.generateRecipe({ mealSlot: "lunch", foodIds: [10] } as any, 1, -420);
+
+    expect(userContextService.assembleRecipeGenerationContext).toHaveBeenCalledWith(
+      1,
+      expect.any(String),
+      "lunch",
+      -420,
+    );
+  });
+
   it("recalculates nutrition from food data instead of trusting raw AI placeholder", async () => {
     const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
     const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };

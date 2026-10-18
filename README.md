@@ -78,3 +78,119 @@ FCM sends use Firebase Admin credentials.
 - `NOTIFICATIONS_SCHEDULER_ENABLED`: set to `true` to run daily reminder sends every minute.
 
 Use only one Firebase credential option. Keep scheduler disabled until device token registration and admin broadcast are verified.
+
+## 8) RAG knowledge base
+
+Admins build the RAG knowledge base from the admin API (`/admin/rag/...`): add a web page URL or upload a PDF
+(max 50 MB). A background worker converts it with Docling, transcribes informative images with Gemini, splits it
+into chunks, tags each chunk with Jev (TypeSafe), with Gemini as fallback, embeds it with `bge-m3` on Ollama, and
+stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change without a restart.
+
+### Setup
+
+1. Pull the embedding model (RAG uses `bge-m3`, 1024 dims; food search keeps `nomic-embed-text`):
+
+   ```
+   ollama pull bge-m3
+   ```
+
+   Ollama hosts both models, and the ingest worker shares the machine with user traffic. Run Ollama with:
+
+   ```
+   OLLAMA_MAX_LOADED_MODELS=2
+   OLLAMA_NUM_PARALLEL=1
+   ```
+
+2. Start docling-serve (pinned image, 4 GB memory limit, one worker) on port 5001:
+
+   ```
+   docker compose -f docker-compose.rag.yml up -d
+   ```
+
+3. If the database still has the old `rag_embeddings` table with `vector(768)`, the server logs
+   `rag_embeddings.embedding has dimension 768 but RAG_EMBEDDING_DIM=1024` at startup. Drop the table and restart
+   the server, which recreates it as `vector(1024)`. The old embeddings are not needed, because the old corpus was
+   discarded:
+
+   ```
+   psql -h <host> -p <port> -U <user> -d <db> -f scripts/sql/rag-reset-embeddings-1024.sql
+   ```
+
+4. Create a new Jev (TypeSafe) API key for this deployment and put it in `TYPESAFE_API_KEY`. Never reuse a key that
+   has been shared or committed. Without a key, tagging falls back to Gemini (through `LLM_PROVIDER`).
+
+5. Add the new `.env` variables (see `.env.example`):
+
+   | Variable | Default | Purpose |
+   |---|---|---|
+   | `RAG_EMBEDDING_MODEL` | `bge-m3` | Ollama model for RAG chunks and RAG queries |
+   | `RAG_EMBEDDING_DIM` | `1024` | Must match `rag_embeddings.embedding` |
+   | `FOOD_EMBEDDING_MODEL` | `nomic-embed-text` | Food semantic search model (unchanged) |
+   | `POSTGRES_SYNC_EMBEDDINGS_ON_BOOT` | `false` | The ingest worker owns RAG embeddings now |
+   | `DOCLING_URL` | `http://localhost:5001` | docling-serve base URL |
+   | `DOCLING_TIMEOUT_MS` | `3600000` | Deadline for one document conversion |
+   | `RAG_STORAGE_DIR` | `./storage/rag` | Uploaded PDFs and extracted images |
+   | `TYPESAFE_API_KEY` | (empty) | Jev key for chunk tagging |
+   | `TYPESAFE_API_URL` | `https://api.typesafe.ai/v1` | Jev API |
+   | `JEV_MODEL` | `jev-latest` | Jev model |
+   | `RAG_TAGGER` | `jev` | `jev` (Gemini fallback) or `gemini` |
+   | `RAG_TAG_THRESHOLD` | `0.5` | Minimum Jev probability to keep a tag |
+   | `GEMINI_VISION_MODEL` | (empty = `GEMINI_MODEL`) | Model for image transcription |
+   | `RAG_INGEST_POLL_MS` | `5000` | Worker poll interval |
+   | `RAG_INGEST_WORKER_ENABLED` | `true` | Set `false` to stop picking up jobs |
+   | `RAG_MAX_PDF_PAGES` | `300` | PDFs with more pages fail with a clear error |
+
+6. When the server runs in Docker, mount `RAG_STORAGE_DIR` as a volume. It holds the source PDFs and the images
+   that the admin page shows next to image chunks, so it must not live inside the image or the container layer:
+
+   ```
+   docker run ... -e RAG_STORAGE_DIR=/data/rag -v rag-storage:/data/rag nutrition-coach-server
+   ```
+
+### Verify end to end
+
+Log in as an admin and keep the token:
+
+```
+curl -s -X POST localhost:3001/admin/auth/login -H 'Content-Type: application/json' \
+  -d '{"email":"<admin email>","password":"<password>"}'
+# TOKEN = data.accessToken
+```
+
+1. Add a web page and poll until `status` is `ready` and `chunkCount > 0`:
+
+   ```
+   curl -s -X POST localhost:3001/admin/rag/documents/url -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' \
+     -d '{"url":"https://www.who.int/news-room/fact-sheets/detail/healthy-diet"}'
+   curl -s localhost:3001/admin/rag/documents/<id> -H "Authorization: Bearer $TOKEN"
+   ```
+
+2. Upload a PDF with tables and an infographic, then poll it the same way:
+
+   ```
+   curl -s -X POST localhost:3001/admin/rag/documents/upload -H "Authorization: Bearer $TOKEN" \
+     -F 'file=@guide.pdf;type=application/pdf'
+   ```
+
+3. Check the chunks against the PDF. Table rows must match the PDF exactly. Image chunks must carry the numbers
+   from the image, and logos must not create chunks:
+
+   ```
+   curl -s "localhost:3001/admin/rag/documents/<id>/chunks?blockKind=table" -H "Authorization: Bearer $TOKEN"
+   curl -s "localhost:3001/admin/rag/documents/<id>/chunks?blockKind=image" -H "Authorization: Bearer $TOKEN"
+   curl -s localhost:3001/admin/rag/chunks/<chunkId>/image -H "Authorization: Bearer $TOKEN" -o image.png
+   ```
+
+4. Edit a chunk, then search for a word from the new content without restarting the server:
+
+   ```
+   curl -s -X PATCH localhost:3001/admin/rag/chunks/<chunkId> -H "Authorization: Bearer $TOKEN" \
+     -H 'Content-Type: application/json' -d '{"content":"..."}'
+   curl -s "localhost:3001/rag/evaluate?q=<word>&mode=bm25-only"
+   ```
+
+   Re-ingest the document (`POST /admin/rag/documents/<id>/reingest`): the edited chunk keeps its content.
+   Disable a chunk with `{"isActive":false}`: `/rag/evaluate` stops returning it.
+
+5. Restart the server on an empty knowledge base: it must start normally and retrieval returns no results.

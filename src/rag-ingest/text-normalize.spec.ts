@@ -2,10 +2,18 @@ import {
   countWords,
   detectLanguage,
   documentLanguage,
+  normalizeMultiline,
   normalizeText,
 } from './text-normalize';
 
 describe('text-normalize', () => {
+  it('normalizeMultiline keeps line breaks, collapses blanks and converts to NFC', () => {
+    expect(normalizeMultiline('  a \t b  \r\n\r\n\r\n\n  c  \n')).toBe('a b\n\nc');
+    expect(normalizeMultiline('x\ny')).toBe('x\ny');
+    const nfd = 'tiểu  đường\nhai'.normalize('NFD');
+    expect(normalizeMultiline(nfd)).toBe('tiểu đường\nhai');
+  });
+
   it('normalizeText converts NFD Vietnamese to NFC', () => {
     const nfd = 'tiểu  đường '.normalize('NFD');
     expect(nfd).not.toBe('tiểu  đường ');

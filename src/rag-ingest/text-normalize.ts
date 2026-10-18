@@ -3,6 +3,23 @@ export function normalizeText(s: string): string {
   return s.normalize('NFC').replace(/\s+/g, ' ').trim();
 }
 
+/**
+ * NFC-normalize while keeping line breaks: collapses spaces/tabs inside each
+ * line, trims every line, reduces runs of blank lines to at most one blank line.
+ */
+export function normalizeMultiline(s: string): string {
+  const lines = s
+    .normalize('NFC')
+    .split(/\r\n|\r|\n/)
+    .map((l) => l.replace(/[^\S\n]+/g, ' ').trim());
+  const out: string[] = [];
+  for (const line of lines) {
+    if (line === '' && out[out.length - 1] === '') continue;
+    out.push(line);
+  }
+  return out.join('\n').trim();
+}
+
 export function countWords(s: string): number {
   const t = normalizeText(s);
   return t === '' ? 0 : t.split(' ').length;

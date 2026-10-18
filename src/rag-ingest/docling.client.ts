@@ -56,6 +56,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { normalizeText } from './text-normalize';
+import { repairTableHeaders } from './table-continuation';
 import type { ExtractedBlock, ExtractedDocument } from './rag-ingest.types';
 
 export type DoclingErrorCode = 'FETCH_FAILED' | 'CONVERT_FAILED' | 'UNAVAILABLE';
@@ -259,7 +260,8 @@ export function mapDoclingDocument(
   const pageKeys = isObj(doc.pages) ? Object.keys(doc.pages) : [];
   const result: ExtractedDocument = {
     title: title ?? fallbackTitle ?? (typeof doc.name === 'string' ? doc.name : ''),
-    blocks,
+    // Docling flags the first row of a table continued after a page break as its header.
+    blocks: repairTableHeaders(blocks),
   };
   if (pageKeys.length > 0) result.pageCount = pageKeys.length;
   return result;

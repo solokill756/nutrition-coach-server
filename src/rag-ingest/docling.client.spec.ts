@@ -297,6 +297,46 @@ describe('mapDoclingDocument tolerance', () => {
   });
 });
 
+describe('mapDoclingDocument table header repair', () => {
+  const cell = (text: string, header = false) => ({ text, column_header: header });
+  const tableNode = (rows: ReturnType<typeof cell>[][], captions: unknown[] = []) => ({
+    label: 'table',
+    captions,
+    prov: [{ page_no: 1 }],
+    data: { grid: rows },
+  });
+
+  it('treats a caption-less same-width table right after another table as its continuation', () => {
+    const json = {
+      body: { children: [{ $ref: '#/tables/0' }, { $ref: '#/tables/1' }] },
+      texts: [{ label: 'caption', text: 'Bảng 2: Canxi' }],
+      tables: [
+        tableNode(
+          [
+            [cell('Nhóm', true), cell('RDA', true)],
+            [cell('50-69 tuổi'), cell('800')],
+          ],
+          [{ $ref: '#/texts/0' }],
+        ),
+        tableNode([
+          [cell('≥70 tuổi', true), cell('1000', true)],
+          [cell('Phụ nữ có thai'), cell('1200')],
+        ]),
+      ],
+    };
+    const doc = mapDoclingDocument(json);
+    expect(doc.blocks[1]).toMatchObject({
+      kind: 'table',
+      caption: 'Bảng 2: Canxi',
+      header: [['Nhóm', 'RDA']],
+      rows: [
+        ['≥70 tuổi', '1000'],
+        ['Phụ nữ có thai', '1200'],
+      ],
+    });
+  });
+});
+
 describe('DoclingClient (async API)', () => {
   const cfg = (env: Record<string, string> = {}) =>
     ({ get: (k: string) => env[k] }) as any;

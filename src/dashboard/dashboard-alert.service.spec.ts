@@ -232,4 +232,43 @@ describe("DashboardAlertService", () => {
 
     expect(alerts.map((a) => a.nutrientType)).toEqual(["sodium", "saturatedFat", "cholesterol"]);
   });
+
+  describe("buildHealthNutrients", () => {
+    it("returns only the alerted bound per nutrient", () => {
+      const out = service.buildHealthNutrients(totals({ fiber: 25, sodium: 1000, phosphorus: 500 }), [
+        threshold("fiber", { min: 25, max: 40, unit: "g" }),
+        threshold("sodium", { min: 500, max: 1500, unit: "mg" }),
+        threshold("phosphorus", { min: 700, unit: "mg" }),
+      ]);
+      expect(out.fiber).toEqual({ current: 25, min: 25, max: null, unit: "g" });
+      expect(out.sodium).toEqual({ current: 1000, min: null, max: 1500, unit: "mg" });
+      expect(out.phosphorus).toEqual({ current: 500, min: null, max: null, unit: "mg" });
+      expect(out.sugars).toEqual({ current: 20, min: null, max: null, unit: "g" });
+    });
+
+    it("matches aliased threshold names", () => {
+      const out = service.buildHealthNutrients(totals(), [
+        threshold("saturated_fat", { max: 20 }),
+        threshold("dietary_fiber", { min: 28 }),
+        threshold("Phosphorus", { max: 800, unit: "mg" }),
+      ]);
+      expect(out.saturatedFat.max).toBe(20);
+      expect(out.fiber.min).toBe(28);
+      expect(out.phosphorus.max).toBe(800);
+    });
+
+    it("returns null bounds for every nutrient without thresholds", () => {
+      const out = service.buildHealthNutrients(totals(), []);
+      for (const v of Object.values(out)) expect([v.min, v.max]).toEqual([null, null]);
+      expect(Object.keys(out).sort()).toEqual([
+        "cholesterol",
+        "fiber",
+        "phosphorus",
+        "potassium",
+        "saturatedFat",
+        "sodium",
+        "sugars",
+      ]);
+    });
+  });
 });

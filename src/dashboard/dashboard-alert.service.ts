@@ -47,6 +47,37 @@ export type DashboardDailyTotals = {
   folate: number;
 };
 
+export type HealthNutrientKey =
+  | "fiber"
+  | "sugars"
+  | "sodium"
+  | "saturatedFat"
+  | "cholesterol"
+  | "potassium"
+  | "phosphorus";
+export type HealthNutrientValue = {
+  current: number;
+  min: number | null;
+  max: number | null;
+  unit: "g" | "mg";
+};
+export type DashboardHealthNutrients = Record<HealthNutrientKey, HealthNutrientValue>;
+
+const HEALTH_NUTRIENT_RULES: {
+  key: HealthNutrientKey;
+  direction: AlertDirection;
+  unit: "g" | "mg";
+  thresholdKey: string;
+}[] = [
+  { key: "fiber", direction: "min", unit: "g", thresholdKey: "fiber" },
+  { key: "sugars", direction: "max", unit: "g", thresholdKey: "sugars" },
+  { key: "sodium", direction: "max", unit: "mg", thresholdKey: "sodium" },
+  { key: "saturatedFat", direction: "max", unit: "g", thresholdKey: "saturatedfat" },
+  { key: "cholesterol", direction: "max", unit: "mg", thresholdKey: "cholesterol" },
+  { key: "potassium", direction: "min", unit: "mg", thresholdKey: "potassium" },
+  { key: "phosphorus", direction: "max", unit: "mg", thresholdKey: "phosphorus" },
+];
+
 type AlertRule = {
   nutrientType: keyof DashboardDailyTotals;
   thresholdKey: string;
@@ -203,6 +234,28 @@ export class DashboardAlertService implements OnModuleInit {
 
   private isConditionThreshold(t: UserNutritionalThresholdEntity | undefined): boolean {
     return t?.origin === "admin_rule" || t?.sourceConditionKey != null;
+  }
+
+  buildHealthNutrients(
+    totals: DashboardDailyTotals,
+    thresholds: UserNutritionalThresholdEntity[],
+  ): DashboardHealthNutrients {
+    const thresholdByKey = this.indexThresholds(thresholds);
+    const round1 = (value: number) => Math.round(value * 10) / 10;
+    const result = {} as DashboardHealthNutrients;
+    for (const rule of HEALTH_NUTRIENT_RULES) {
+      const threshold = thresholdByKey.get(rule.thresholdKey);
+      const limit = rule.direction === "max" ? threshold?.maxAmount : threshold?.minAmount;
+      const bound = limit != null && Number.isFinite(limit) && limit > 0 ? round1(limit) : null;
+      const current = totals[rule.key];
+      result[rule.key] = {
+        current: Number.isFinite(current) ? round1(current) : 0,
+        min: rule.direction === "min" ? bound : null,
+        max: rule.direction === "max" ? bound : null,
+        unit: rule.unit,
+      };
+    }
+    return result;
   }
 
   private indexThresholds(

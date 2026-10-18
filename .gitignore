@@ -9,3 +9,4 @@ postman/environment.json
 postman/report.html
 *.tsbuildinfo
 .superpowers/
+storage/

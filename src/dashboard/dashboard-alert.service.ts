@@ -233,7 +233,7 @@ export class DashboardAlertService implements OnModuleInit {
   }
 
   private isConditionThreshold(t: UserNutritionalThresholdEntity | undefined): boolean {
-    return t?.origin === "admin_rule" || t?.sourceConditionKey != null;
+    return t?.origin === "admin_rule";
   }
 
   buildHealthNutrients(
@@ -241,15 +241,14 @@ export class DashboardAlertService implements OnModuleInit {
     thresholds: UserNutritionalThresholdEntity[],
   ): DashboardHealthNutrients {
     const thresholdByKey = this.indexThresholds(thresholds);
-    const round1 = (value: number) => Math.round(value * 10) / 10;
     const result = {} as DashboardHealthNutrients;
     for (const rule of HEALTH_NUTRIENT_RULES) {
       const threshold = thresholdByKey.get(rule.thresholdKey);
       const limit = rule.direction === "max" ? threshold?.maxAmount : threshold?.minAmount;
-      const bound = limit != null && Number.isFinite(limit) && limit > 0 ? round1(limit) : null;
+      const bound = limit != null && Number.isFinite(limit) && limit > 0 ? this.roundValue(limit) : null;
       const current = totals[rule.key];
       result[rule.key] = {
-        current: Number.isFinite(current) ? round1(current) : 0,
+        current: Number.isFinite(current) ? this.roundValue(current) : 0,
         min: rule.direction === "min" ? bound : null,
         max: rule.direction === "max" ? bound : null,
         unit: rule.unit,

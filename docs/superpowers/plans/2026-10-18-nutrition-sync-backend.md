@@ -21,7 +21,7 @@ Mỗi task có test Jest riêng.
 - **Chỉ thêm field vào response API.** Không đổi tên và không xoá field hiện có, vì app Flutter và web đang đọc chúng (`macros`, `micronutrients`, `dietaryFibersG`, `sugarsG`, `folate`…).
 - Không thêm migration, không đổi schema database. Không xoá entity `DailyNutritionSummary`.
 - 12 vi chất (calcium, iron, magnesium, zinc, vitamin A/C/D/E/K/B6/B12, folate) vẫn giữ trong database và response, chỉ không còn sinh cảnh báo.
-- Cảnh báo max protein **chỉ** bật khi ngưỡng đến từ rule theo bệnh, tức `origin === "admin_rule"` hoặc `sourceConditionKey != null`.
+- Cảnh báo max protein **chỉ** bật khi ngưỡng đến từ rule theo bệnh, tức `origin === "admin_rule"` (không dựa vào `sourceConditionKey`, vì khóa này có thể còn sót sau khi bỏ bệnh).
 - `healthNutrients` chỉ trả bound theo hướng cảnh báo: fiber và potassium trả `min`; sugars, sodium, saturatedFat, cholesterol, phosphorus trả `max`; bound còn lại luôn `null`.
 - Làm trên nhánh mới `feat/nutrition-sync` tạo từ `feat/meal-splits`.
 - Lệnh chạy từ thư mục `nutrition-coach-server`. Nếu git báo "dubious ownership" thì thêm `-c safe.directory='*'` vào lệnh, **không** sửa cấu hình git global.
@@ -129,7 +129,7 @@ it("does not alert when phosphorus is below the system min", () => {
 - [ ] **Step 4: Sửa code.**
   - Cập nhật 2 mảng rule như phần Interfaces.
   - Trong `buildAlert`, return `null` khi `rule.conditionOnly` mà ngưỡng không đến từ rule bệnh.
-  - Kiểm tra "đến từ rule bệnh" bằng `private isConditionThreshold(t: UserNutritionalThresholdEntity | undefined): boolean`, trả `t?.origin === "admin_rule" || t?.sourceConditionKey != null`.
+  - Kiểm tra "đến từ rule bệnh" bằng `private isConditionThreshold(t: UserNutritionalThresholdEntity | undefined): boolean`, trả `t?.origin === "admin_rule"`.
   - Giữ nguyên `NUTRIENT_PRIORITY`.
 - [ ] **Step 5:** chạy lại test như Step 3. Expected: PASS hết, kể cả test sort/limit cũ.
 - [ ] **Step 6: Commit** `feat(dashboard): alert on the 11-nutrient set; protein max only for condition rules`

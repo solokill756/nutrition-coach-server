@@ -179,6 +179,12 @@ describe("DashboardAlertService", () => {
     })]);
   });
 
+  it("ignores a stale sourceConditionKey on a system protein row", () => {
+    expect(service.buildDailyAlerts("2026-05-22", totals({ protein: 130 }), [
+      threshold("protein", { max: 112, min: 90, unit: "g", origin: "system", sourceConditionKey: "kidney_disease" }),
+    ])).toEqual([]);
+  });
+
   it("ignores the system protein max but still warns below the protein min", () => {
     expect(service.buildDailyAlerts("2026-05-22", totals({ protein: 130 }), [
       threshold("protein", { min: 90, max: 112, unit: "g", origin: "system" }),

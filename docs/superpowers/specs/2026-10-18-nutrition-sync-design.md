@@ -69,7 +69,7 @@ File: `src/dashboard/dashboard-alert.service.ts` (:57-80).
 
 - `MAX_ALERT_RULES`: giữ calories, carbs, fat, sugars, sodium, saturatedFat, cholesterol; **thêm protein và phosphorus** (rule bệnh thận đặt max protein 70 g, max phosphorus 800 mg nhưng hiện không bao giờ cảnh báo).
 - `MIN_ALERT_RULES`: giữ protein, fiber, potassium; **bỏ** calcium, iron, magnesium, zinc, vitaminC, vitaminB6, vitaminB12, folate.
-- **Cảnh báo max protein chỉ dành cho người có bệnh**: chỉ bật khi ngưỡng protein đến từ rule theo bệnh (`origin = "admin_rule"` hoặc có `sourceConditionKey`, ví dụ bệnh thận max 70 g). Ngưỡng hệ thống (max = 112% mục tiêu protein, có ở mọi user) **không** được sinh cảnh báo max. Cần test cho cả hai trường hợp.
+- **Cảnh báo max protein chỉ dành cho người có bệnh**: chỉ bật khi ngưỡng protein đến từ rule theo bệnh (`origin = "admin_rule"`, ví dụ bệnh thận max 70 g). Không dựa vào `sourceConditionKey`: field này không bị xoá khi ngưỡng được tính lại sau khi user bỏ bệnh, nên có thể còn sót lại trên dòng `origin = "system"`. Ngưỡng hệ thống (max = 112% mục tiêu protein, có ở mọi user) **không** được sinh cảnh báo max. Cần test cho cả hai trường hợp.
 - Một chỉ số có cả rule min và max (protein) phải hoạt động đúng: chỉ cảnh báo hướng nào có ngưỡng và bị vượt.
 - `NUTRIENT_PRIORITY` có thể giữ nguyên.
 - Hệ quả đã chấp nhận: user trên app Flutter cũng sẽ không còn nhận cảnh báo vi chất (cảnh báo do backend sinh).

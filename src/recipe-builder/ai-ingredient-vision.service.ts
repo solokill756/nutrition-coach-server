@@ -35,7 +35,7 @@ export class AiIngredientVisionService {
       return [];
     }
 
-    const root = parsed as { ingredients?: unknown };
+    const root = (parsed ?? {}) as { ingredients?: unknown };
     const list = Array.isArray(root.ingredients)
       ? root.ingredients
       : Array.isArray(parsed)
@@ -44,6 +44,7 @@ export class AiIngredientVisionService {
 
     return list
       .map((item): DetectedIngredient | null => {
+        if (typeof item !== "object" || item === null) return null;
         const row = item as Record<string, unknown>;
         const name = String(row.name ?? row.ingredient ?? "").trim();
         if (name.length < 2) {

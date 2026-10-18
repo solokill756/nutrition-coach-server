@@ -37,6 +37,15 @@ describe("AiIngredientVisionService", () => {
     expect(service.parseIngredients("not json")).toEqual([]);
   });
 
+  it("skips null and non-object items instead of throwing (no 500)", () => {
+    expect(service.parseIngredients('{"ingredients":[null]}')).toEqual([]);
+    expect(service.parseIngredients('{"ingredients":[null, 3, "egg", {"name":"rice","confidence":0.6}]}')).toEqual([
+      { name: "rice", confidence: 0.6 },
+    ]);
+    expect(service.parseIngredients("[null]")).toEqual([]);
+    expect(service.parseIngredients("null")).toEqual([]);
+  });
+
   it("recognizes ingredients from image url", async () => {
     mockedAxios.get.mockResolvedValueOnce({
       data: Buffer.from("img"),

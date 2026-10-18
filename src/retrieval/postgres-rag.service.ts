@@ -37,6 +37,7 @@ export class PostgresRagService implements OnModuleDestroy {
   private readonly embeddingsTable = "rag_embeddings";
   private readonly documentsTable = "rag_documents";
   private readonly jobsTable = "rag_ingest_jobs";
+  private schemaReady: Promise<void> | null = null;
 
   constructor(private readonly config: ConfigService) {
     this.enabled = String(this.config.get<string>("USE_POSTGRES_STORAGE") || "false").toLowerCase() === "true";
@@ -75,7 +76,19 @@ export class PostgresRagService implements OnModuleDestroy {
    */
   async ensureSchema(): Promise<void> {
     if (!this.isEnabled()) return;
+    // Single-flight: VectorService and RetrievalService both call this at boot. Two parallel
+    // CREATE TABLE IF NOT EXISTS collide in Postgres (pg_type_typname_nsp_index), and the loser left
+    // retrieval stuck in BM25-only mode. A failed run is cleared so a later call can retry.
+    if (!this.schemaReady) {
+      this.schemaReady = this.runEnsureSchema().catch((error) => {
+        this.schemaReady = null;
+        throw error;
+      });
+    }
+    return this.schemaReady;
+  }
 
+  private async runEnsureSchema(): Promise<void> {
     const chunksTable = this.tableRef(this.chunksTable);
     const embeddingsTable = this.tableRef(this.embeddingsTable);
 

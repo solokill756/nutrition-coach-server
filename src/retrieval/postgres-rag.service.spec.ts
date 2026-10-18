@@ -85,6 +85,23 @@ describe("PostgresRagService", () => {
     expect(sql).toMatch(/vector\(1024\)/);
   });
 
+  it("ensureSchema runs once for concurrent callers (VectorService and RetrievalService boot together)", async () => {
+    // Two parallel CREATE TABLE IF NOT EXISTS on a fresh DB collide on pg_type_typname_nsp_index.
+    queryMock.mockResolvedValue({ rows: [{ atttypmod: 1024 }], rowCount: 1 });
+    const service = new PostgresRagService(createConfig(true));
+    await Promise.all([service.ensureSchema(), service.ensureSchema()]);
+    const createExtension = queryMock.mock.calls.filter((c) => /CREATE EXTENSION/.test(String(c[0])));
+    expect(createExtension).toHaveLength(1);
+  });
+
+  it("ensureSchema can be retried after a failure", async () => {
+    queryMock.mockRejectedValueOnce(new Error("db down"));
+    const service = new PostgresRagService(createConfig(true));
+    await expect(service.ensureSchema()).rejects.toThrow(/pgvector extension unavailable/);
+    queryMock.mockResolvedValue({ rows: [{ atttypmod: 1024 }], rowCount: 1 });
+    await expect(service.ensureSchema()).resolves.toBeUndefined();
+  });
+
   it("checkEmbeddingDimension reports mismatch", async () => {
     queryMock.mockResolvedValue({ rows: [{ atttypmod: 768 }], rowCount: 1 });
     await expect(new PostgresRagService(createConfig(true)).checkEmbeddingDimension()).resolves.toEqual({

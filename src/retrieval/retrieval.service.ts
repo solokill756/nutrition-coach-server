@@ -254,14 +254,20 @@ export class RetrievalService implements OnModuleInit {
   }
 
   private formatRetrievalResult(doc: DomainDoc, score: number): RetrievalResult {
+    const page = Number(doc.metadata?.page_from);
+    const blockKind = doc.metadata?.block_kind;
     return {
       id: doc.id,
       source: doc.source,
       title: doc.title,
-      content: doc.content.substring(0, 500) + (doc.content.length > 500 ? "..." : ""),
+      // Whole chunk: callers size the prompt (buildRagReferenceBlock); a prefix
+      // can end mid-number.
+      content: doc.content,
       domain: String(doc.metadata?.domain || "unknown"),
       score: parseFloat(Number(score || 0).toFixed(4)),
       link: extractLink(doc),
+      page: Number.isFinite(page) && page > 0 ? page : undefined,
+      blockKind: typeof blockKind === "string" ? blockKind : undefined,
       isChunk: isChunkDoc(doc),
       parentId: getParentId(doc),
       chunkIndex: getChunkIndex(doc),

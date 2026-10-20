@@ -294,7 +294,7 @@ export class DashboardService implements OnModuleDestroy {
 
     const ctx: DashboardAiSuggestionContext = {
       user: {
-        displayName: base.user.displayName,
+        age: base.user.age ?? null,
         sex: base.user.sex,
         weightKg: base.currentKgFromLog ?? base.userWeight,
         goalWeightKg: base.user.goalWeight != null && Number.isFinite(Number(base.user.goalWeight)) ? Number(base.user.goalWeight) : null,

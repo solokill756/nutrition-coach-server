@@ -1,5 +1,13 @@
 import { Transform } from "class-transformer";
-import { IsEmail, IsOptional, IsString, IsUrl, MinLength, ValidateIf } from "class-validator";
+import {
+  IsEmail,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MinLength,
+  ValidateIf,
+} from "class-validator";
 
 export class UpdateProfileDto {
   @IsOptional()
@@ -21,4 +29,9 @@ export class UpdateProfileDto {
   @ValidateIf((_, value) => value !== undefined && value !== "")
   @IsUrl({ require_protocol: true }, { message: "avatarUrl must be a valid URL" })
   avatarUrl?: string;
+
+  /** Custom meal split (% per meal, total 100); null resets to the default. Checked in AuthService. */
+  @IsOptional()
+  @IsObject()
+  mealSplits?: Record<string, unknown> | null;
 }

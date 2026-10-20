@@ -15,6 +15,10 @@ export type RetrievalResult = {
   domain: string;
   score: number;
   link?: string;
+  /** First PDF page of the chunk. */
+  page?: number;
+  /** "text" | "table" | "image": how the chunk was extracted. */
+  blockKind?: string;
   isChunk?: boolean;
   parentId?: string;
   chunkIndex?: number;

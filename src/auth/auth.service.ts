@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   UnauthorizedException,
   UnprocessableEntityException,
 } from "@nestjs/common";
@@ -24,7 +25,9 @@ import {
 import { UserGoalEntity } from "../nutrition/entities/user-goal.entity";
 import { UserHealthConditionEntity } from "../nutrition/entities/user-health-condition.entity";
 import { UserNutritionalThresholdEntity } from "../nutrition/entities/user-nutritional-threshold.entity";
+import { percentMealSplits, validateMealSplits } from "../nutrition/meal-splits";
 import { NutritionCalculatorService } from "../nutrition/nutrition-calculator.service";
+import { UserContextService } from "../nutrition/user-context.service";
 import { UserThresholdBuilderService } from "../nutrition/user-threshold-builder.service";
 import { UserThresholdPersistenceService } from "../nutrition/user-threshold-persistence.service";
 import { AppUserEntity } from "./entities/app-user.entity";
@@ -72,10 +75,23 @@ const AUTH_ERROR_MESSAGES: Record<string, string> = {
   "auth.errors.profileIncomplete":
     "Complete your profile before changing goals",
   "validation.isDateString": "Value must be a valid ISO 8601 date string",
+  "users.errors.invalidMealSplits": "Meal split must add up to 100%.",
 };
+
+/**
+ * Turns FIREBASE_PRIVATE_KEY from the environment into a PEM string.
+ * dotenv strips surrounding quotes but `docker run --env-file` keeps them,
+ * and both leave line breaks escaped as `\n`.
+ */
+function normalizeFirebasePrivateKey(raw: string): string {
+  const trimmed = raw.trim();
+  const unquoted = /^(["'])([\s\S]*)\1$/.exec(trimmed)?.[2] ?? trimmed;
+  return unquoted.replace(/\\n/g, "\n").trim();
+}
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
   private firebaseAuthClient: Auth | null = null;
 
   constructor(
@@ -97,6 +113,7 @@ export class AuthService {
     @InjectRepository(UserNutritionalThresholdEntity)
     private readonly thresholdRepo: Repository<UserNutritionalThresholdEntity>,
     private readonly weightService: WeightService,
+    private readonly userContextService: UserContextService,
   ) {}
 
   async register(dto: RegisterDto): Promise<AuthResponse> {
@@ -301,7 +318,11 @@ export class AuthService {
       activityLevel: user.fitnessLevel,
       goalType: slug,
     });
-    const adjustedCalories = plan.targetCalories;
+    // A user-chosen target keeps the plan's macro percentages; grams scale with it.
+    const adjustedCalories = dto.targetCalories ?? plan.targetCalories;
+    const gramScale =
+      plan.targetCalories > 0 ? adjustedCalories / plan.targetCalories : 1;
+    const scaleG = (g: number) => Math.round(g * gramScale * 10) / 10;
 
     await this.goalRepo.manager.transaction(async (manager) => {
       await manager.update(
@@ -314,9 +335,9 @@ export class AuthService {
         userId,
         targetCalories: adjustedCalories,
         macroCenter: {
-          proteinG: plan.proteinG,
-          carbsG: plan.carbsG,
-          fatG: plan.fatG,
+          proteinG: scaleG(plan.proteinG),
+          carbsG: scaleG(plan.carbsG),
+          fatG: scaleG(plan.fatG),
           proteinPercent: plan.proteinPercent,
           carbsPercent: plan.carbsPercent,
           fatPercent: plan.fatPercent,
@@ -397,15 +418,33 @@ export class AuthService {
       changed = true;
     }
 
+    let mealSplitsChanged = false;
+    if (dto.mealSplits !== undefined) {
+      if (dto.mealSplits === null) {
+        user.mealSplits = null;
+      } else {
+        const splits = validateMealSplits(dto.mealSplits);
+        if (!splits) throw this.unprocessable("users.errors.invalidMealSplits");
+        user.mealSplits = splits;
+      }
+      changed = true;
+      mealSplitsChanged = true;
+    }
+
     if (changed) {
       user.updatedAt = new Date();
       await this.appUserRepo.save(user);
     }
+    // Recipe context caches the split for 5 minutes; the next recipe must use the new one.
+    if (mealSplitsChanged) this.userContextService.invalidateUserCache(userId);
 
     return this.me(userId);
   }
 
   async refresh(dto: RefreshDto, ipAddress?: string): Promise<AuthResponse> {
+    if (!dto.refreshToken) {
+      throw this.unauthorized("auth.errors.invalidRefreshToken");
+    }
     const payload = await this.verifyRefreshToken(dto.refreshToken);
     const refreshHash = this.hashToken(dto.refreshToken);
 
@@ -448,6 +487,33 @@ export class AuthService {
       .where('"UserId" = :userId AND "IsRevoked" = false', { userId })
       .execute();
 
+    return { success: true };
+  }
+
+  /**
+   * Revokes the one session this refresh token belongs to. Signing out must
+   * never fail, so an unknown, expired or already revoked token is a success.
+   */
+  async logout(refreshToken?: string): Promise<{ success: boolean }> {
+    if (!refreshToken) {
+      return { success: true };
+    }
+    let payload: JwtRefreshPayload;
+    try {
+      payload = await this.verifyRefreshToken(refreshToken);
+    } catch {
+      return { success: true };
+    }
+
+    await this.sessionRepo.update(
+      {
+        id: payload.sid,
+        userId: payload.sub,
+        refreshTokenHash: this.hashToken(refreshToken),
+        isRevoked: false,
+      },
+      { isRevoked: true, lastUsedAt: new Date() },
+    );
     return { success: true };
   }
 
@@ -774,6 +840,8 @@ export class AuthService {
       if (error instanceof BadRequestException) {
         throw error;
       }
+      const { code, message } = error as { code?: string; message?: string };
+      this.logger.warn(`Firebase ID token rejected: ${code ?? "unknown"} ${message ?? ""}`);
       throw this.unauthorized("auth.errors.invalidProviderIdToken");
     }
   }
@@ -795,22 +863,31 @@ export class AuthService {
     const clientEmail = (
       this.config.get<string>("FIREBASE_CLIENT_EMAIL") || ""
     ).trim();
-    const privateKeyRaw = this.config.get<string>("FIREBASE_PRIVATE_KEY") || "";
-    const privateKey = privateKeyRaw.replace(/\\n/g, "\n").trim();
+    const privateKey = normalizeFirebasePrivateKey(
+      this.config.get<string>("FIREBASE_PRIVATE_KEY") || "",
+    );
 
     if (!projectId || !clientEmail || !privateKey) {
       throw this.badRequest("auth.errors.firebaseOauthNotConfigured");
     }
 
-    const app = initializeApp({
-      credential: cert({
-        projectId,
-        clientEmail,
-        privateKey,
-      }),
-    });
-
-    this.firebaseAuthClient = getAuth(app);
+    try {
+      const app = initializeApp({
+        credential: cert({
+          projectId,
+          clientEmail,
+          privateKey,
+        }),
+      });
+      this.firebaseAuthClient = getAuth(app);
+    } catch (error) {
+      // A bad service-account key is a server problem; reporting it as an
+      // invalid client token hides the real cause.
+      this.logger.error(
+        `Firebase Admin init failed: ${(error as Error).message}`,
+      );
+      throw this.badRequest("auth.errors.firebaseOauthNotConfigured");
+    }
     return this.firebaseAuthClient;
   }
 
@@ -1008,6 +1085,7 @@ export class AuthService {
       activityLevel: user.fitnessLevel,
       mealPlanningFrequency: user.dietType,
       barriers: user.allergies ?? [],
+      mealSplits: percentMealSplits(user.mealSplits),
     };
   }
 

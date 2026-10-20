@@ -23,6 +23,10 @@ import { AdminExercisesController } from "./exercises/admin-exercises.controller
 import { AdminExercisesService } from "./exercises/admin-exercises.service";
 import { AdminFoodsController } from "./foods/admin-foods.controller";
 import { AdminFoodsService } from "./foods/admin-foods.service";
+import { AdminRagDocumentsController } from "./rag-documents/admin-rag-documents.controller";
+import { AdminRagDocumentsService } from "./rag-documents/admin-rag-documents.service";
+import { RagIngestModule } from "../rag-ingest/rag-ingest.module";
+import { RetrievalModule } from "../retrieval/retrieval.module";
 import { AdminRecipesController } from "./recipes/admin-recipes.controller";
 import { AdminRecipesService } from "./recipes/admin-recipes.service";
 import { AdminUsersController } from "./users/admin-users.controller";
@@ -35,6 +39,8 @@ import { UserNotificationsModule } from "../user-notifications/user-notification
     JwtModule.register({}),
     NutritionModule,
     UserNotificationsModule,
+    RagIngestModule,
+    RetrievalModule,
     TypeOrmModule.forFeature([
       AppUserEntity,
       FoodNutritionEntity,
@@ -56,6 +62,7 @@ import { UserNotificationsModule } from "../user-notifications/user-notification
     AdminRecipesController,
     AdminUsersController,
     AdminConditionRulesController,
+    AdminRagDocumentsController,
   ],
   providers: [
     AdminAuthService,
@@ -65,6 +72,7 @@ import { UserNotificationsModule } from "../user-notifications/user-notification
     AdminRecipesService,
     AdminUsersService,
     AdminConditionRulesService,
+    AdminRagDocumentsService,
   ],
 })
 export class AdminModule {}

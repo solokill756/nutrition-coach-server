@@ -2,7 +2,10 @@ import { Injectable } from "@nestjs/common";
 import { OllamaService } from "../ollama/ollama.service";
 import { RetrievalService } from "../retrieval/retrieval.service";
 import { buildPersonalizedRagQuery } from "../retrieval/personalized-rag-query";
+import { buildRagReferenceBlock } from "../retrieval/rag-reference-block";
+import type { RetrievalResult } from "../retrieval/retrieval.types";
 import type { UserNutrientThreshold } from "../nutrition/user-context.service";
+import { formatThresholdMinMax } from "../nutrition/condition-related-thresholds";
 import { DashboardAlert } from "./dashboard-alert.service";
 
 export type DashboardAiSuggestion = {
@@ -12,7 +15,7 @@ export type DashboardAiSuggestion = {
 
 export type DashboardAiSuggestionContext = {
   user: {
-    displayName: string;
+    age: number | null;
     sex: string | null;
     weightKg: number | null;
     goalWeightKg: number | null;
@@ -53,6 +56,8 @@ export type DashboardAiSuggestionContext = {
 const AI_SUGGESTION_TIMEOUT_MS = 20000;
 const AI_SUGGESTION_TITLE_MAX = 40;
 const AI_SUGGESTION_MESSAGE_MAX = 180;
+/** Reference budget for one short suggestion: about two whole chunks. */
+const AI_SUGGESTION_REFERENCE_MAX_CHARS = 4000;
 
 @Injectable()
 export class DashboardAiService {
@@ -70,31 +75,37 @@ export class DashboardAiService {
       workoutCount: ctx.exercise.workoutCount,
     });
     const ragContexts = await this.retrieveSuggestionContexts(ctx);
-    const ragReference = this.formatRagReferences(ragContexts);
+    const ragReference = buildRagReferenceBlock(ragContexts, AI_SUGGESTION_REFERENCE_MAX_CHARS).text;
     const systemPrompt = [
       "You are a concise nutrition coach for a daily dashboard.",
       "Return JSON only with exactly this shape: {\"title\":\"short title\",\"message\":\"one practical sentence\"}.",
       "Do not include markdown, code fences, medical diagnosis, treatment advice, or medication advice.",
       "Keep the title under 40 characters and the message under 180 characters.",
       "Base the suggestion only on the dashboard summary and retrieved reference snippets provided by the server.",
+      "Do not state any number that is not in the dashboard summary or the references.",
       "If references are empty or not relevant, use only the dashboard summary.",
     ].join("\n");
 
     const userPrompt = [
       "Create one practical suggestion for today from this dashboard context.",
-      JSON.stringify(
-        {
-          user: ctx.user,
-          calories: ctx.calories,
-          macros: ctx.macros,
-          water: ctx.water,
-          exercise: ctx.exercise,
-          alerts: ctx.alerts,
-        },
-        null,
-        2,
-      ),
-      ragReference,
+      // Compact JSON: indentation is pure token overhead for the model.
+      JSON.stringify({
+        user: ctx.user,
+        conditionLimits: ctx.conditionRelatedThresholds.map(formatThresholdMinMax).filter(Boolean),
+        calories: ctx.calories,
+        macros: ctx.macros,
+        water: ctx.water,
+        exercise: ctx.exercise,
+        alerts: ctx.alerts.map((a) => ({
+          nutrient: a.nutrientType,
+          severity: a.severity,
+          current: a.current,
+          limit: a.limit,
+          unit: a.unit,
+          percent: a.percent,
+        })),
+      }),
+      `Retrieved reference snippets:\n${ragReference}`,
     ].join("\n\n");
 
     try {
@@ -113,7 +124,7 @@ export class DashboardAiService {
     }
   }
 
-  private async retrieveSuggestionContexts(ctx: DashboardAiSuggestionContext) {
+  private async retrieveSuggestionContexts(ctx: DashboardAiSuggestionContext): Promise<RetrievalResult[]> {
     const { question, hints } = buildPersonalizedRagQuery({
       purpose: "dashboard_suggestion",
       profile: {
@@ -136,25 +147,6 @@ export class DashboardAiService {
     }
   }
 
-  private formatRagReferences(
-    contexts: Array<{ title: string; content: string; source: string; domain: string; score: number; link?: string }>,
-  ): string {
-    if (contexts.length === 0) {
-      return "Retrieved reference snippets: none.";
-    }
-
-    const snippets = contexts.map((ctx, index) => {
-      const content = ctx.content.replace(/\s+/g, " ").trim().slice(0, 450);
-      const source = ctx.link ?? ctx.source;
-      return [
-        `[${index + 1}] ${ctx.title}`,
-        `Domain: ${ctx.domain}; score: ${ctx.score}`,
-        `Source: ${source}`,
-        `Snippet: ${content}`,
-      ].join("\n");
-    });
-    return `Retrieved reference snippets:\n${snippets.join("\n\n")}`;
-  }
 
   buildFallbackSuggestion(ctx: {
     remaining: number;

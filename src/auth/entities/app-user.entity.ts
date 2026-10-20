@@ -1,4 +1,5 @@
 import { Column, Entity, PrimaryGeneratedColumn } from "typeorm";
+import type { MealSplitsPercent } from "../../nutrition/meal-splits";
 
 @Entity({ name: "AppUser" })
 export class AppUserEntity {
@@ -50,6 +51,10 @@ export class AppUserEntity {
 
   @Column({ type: "text", name: "Allergies", array: true, nullable: true })
   allergies!: string[] | null;
+
+  /** Custom % of the day's calories per meal; null = DEFAULT_MEAL_SPLITS. */
+  @Column({ type: "jsonb", name: "MealSplits", nullable: true })
+  mealSplits!: MealSplitsPercent | null;
 
   @Column({ type: "text", name: "FitnessLevel", default: "beginner" })
   fitnessLevel!: string;

@@ -1,6 +1,13 @@
+import { Between } from "typeorm";
 import { UserContextService } from "./user-context.service";
+import { calendarDayBounds } from "../common/date/calendar-day-bounds";
 
 describe("UserContextService", () => {
+  let todayRows: any[] = [];
+  beforeEach(() => {
+    todayRows = [];
+  });
+
   function setup() {
     const mkRepo = () => ({ findOne: jest.fn(), find: jest.fn(), create: jest.fn((x: any) => x), save: jest.fn(async (x: any) => x) });
     const goalRepo: any = mkRepo();
@@ -9,10 +16,8 @@ describe("UserContextService", () => {
     healthRepo.find.mockResolvedValue([]);
     const thresholdRepo: any = mkRepo();
     thresholdRepo.find.mockResolvedValue([]);
-    const summaryRepo: any = mkRepo();
-    summaryRepo.findOne.mockResolvedValue(null);
     const logRepo: any = mkRepo();
-    logRepo.find.mockResolvedValue([]);
+    logRepo.find.mockImplementation(async (opts: any) => (opts?.take ? [] : todayRows));
     const userRepo: any = mkRepo();
     const foodRepo: any = mkRepo();
     const recipeRepo: any = mkRepo();
@@ -20,8 +25,9 @@ describe("UserContextService", () => {
     ruleRepo.find.mockResolvedValue([]);
     const mockApplier: any = { applyRules: jest.fn(() => ({ thresholds: [], changedNutrients: [], warnings: [], rebalance: { status: "not_requested", adjustedNutrients: [] } })) };
     const mockUnits: any = { normalizeNutrient: (x: string) => x.trim().replace(/[_\s-]/g, "").toLowerCase() };
-    const service = new UserContextService(goalRepo, healthRepo, thresholdRepo, summaryRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, mockApplier, mockUnits);
-    return { service, goalRepo, healthRepo, thresholdRepo, summaryRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, mockApplier };
+    const mockConfig: any = { get: jest.fn() };
+    const service = new UserContextService(goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, mockApplier, mockUnits, mockConfig);
+    return { service, goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, mockApplier };
   }
 
   it("assembleRecipeGenerationContext validates dateKey", async () => {
@@ -30,7 +36,7 @@ describe("UserContextService", () => {
   });
 
   it("assembleRecipeGenerationContext returns remaining budgets", async () => {
-    const { service, userRepo, goalRepo, summaryRepo, healthRepo, thresholdRepo, ruleRepo } = setup();
+    const { service, userRepo, goalRepo, healthRepo, thresholdRepo, ruleRepo } = setup();
     userRepo.findOne.mockResolvedValueOnce({ id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
     goalRepo.find.mockResolvedValueOnce([{ id: 1, goalType: "weight_loss", targetCalories: 2000, startDate: new Date(), endDate: null }]);
     healthRepo.find.mockResolvedValueOnce([{ conditionName: "hypertension", severity: "mild" }]);
@@ -42,7 +48,7 @@ describe("UserContextService", () => {
     ruleRepo.find.mockResolvedValue([
       { conditionKey: "hypertension", nutrient: "sodium", minAmount: 500, maxAmount: 1500, unit: "mg", isActive: true },
     ]);
-    summaryRepo.findOne.mockResolvedValueOnce({ totalCalories: 800, totalProtein: 30, totalCarbs: 100, totalFat: 20, totalSodium: 500, totalSugar: 10, totalSaturatedFat: 5, totalCholesterol: 100, totalPotassium: 500 });
+    todayRows = [{ calories: "800", sugarsG: "10" }];
 
     const out = await service.assembleRecipeGenerationContext(1, "2026-05-31", "lunch");
     expect(out.dailyTargetCalories).toBe(2000);
@@ -54,7 +60,17 @@ describe("UserContextService", () => {
     ]);
   });
 
-  it("assembleRecipeGenerationContext maps recipe and food history from the same 3-day log query", async () => {
+  it("assembleRecipeGenerationContext carries the user's meal split", async () => {
+    const { service, userRepo } = setup();
+    userRepo.findOne.mockResolvedValueOnce({
+      id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active",
+      mealSplits: { breakfast: 20, lunch: 40, dinner: 35, snack: 5 },
+    });
+    const out = await service.assembleRecipeGenerationContext(1, "2026-05-31", "lunch");
+    expect(out.mealSplits).toEqual({ breakfast: 0.2, lunch: 0.4, dinner: 0.35, snack: 0.05 });
+  });
+
+  it("assembleRecipeGenerationContext maps recipe logs from the single 3-day log query without loading food history", async () => {
     const { service, userRepo, goalRepo, healthRepo, thresholdRepo, logRepo, foodRepo, recipeRepo } = setup();
     const loggedAt = new Date("2026-05-30T00:00:00.000Z");
     userRepo.findOne.mockResolvedValueOnce({ id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
@@ -69,30 +85,33 @@ describe("UserContextService", () => {
 
     const out = await service.assembleRecipeGenerationContext(1, "2026-05-31", "lunch");
 
-    expect(out.recentHistory).toEqual([{ foodName: "Rice", mealType: "lunch", calories: 120, loggedAt }]);
+    // Food-level history is intentionally no longer loaded; only recipe logs are surfaced.
+    expect(out.recentHistory).toEqual([]);
     expect(out.recentRecipeLogs).toEqual([{ recipeName: "Rice bowl", recipeId: 7, loggedAt, mealType: "lunch" }]);
-    expect(logRepo.find).toHaveBeenCalledTimes(1);
-    expect(foodRepo.find).toHaveBeenCalledTimes(1);
+    expect(logRepo.find).toHaveBeenCalledTimes(2);
+    expect(foodRepo.find).not.toHaveBeenCalled();
     expect(recipeRepo.find).toHaveBeenCalledTimes(1);
   });
 
-  it("assembleContext maps summary without loading recent log food history", async () => {
-    const { service, userRepo, goalRepo, healthRepo, thresholdRepo, logRepo, summaryRepo, foodRepo } = setup();
+  it("assembleContext sums today's logs without loading recent log food history", async () => {
+    const { service, userRepo, goalRepo, healthRepo, thresholdRepo, logRepo, foodRepo } = setup();
     userRepo.findOne.mockResolvedValueOnce({ id: 1, displayName: "U", age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
     goalRepo.find.mockResolvedValueOnce([{ goalType: "maintenance", targetCalories: 1800 }]);
     healthRepo.find.mockResolvedValueOnce([{ conditionName: "diabetes" }]);
     thresholdRepo.find.mockResolvedValueOnce([{ nutrient: "sodium", maxAmount: 2000, minAmount: null, unit: "mg" }]);
-    summaryRepo.findOne.mockResolvedValueOnce({ totalCalories: 1000, totalSodium: 500, totalCarbs: 120, totalProtein: 40, totalFat: 30, totalSugar: 20, totalSaturatedFat: 8, totalCholesterol: 120, totalPotassium: 600 });
+    todayRows = [{ calories: "400", sodiumMg: "200" }, { calories: "600", sodiumMg: "300" }];
 
     const out = await service.assembleContext(1);
     expect(out.recentHistory).toEqual([]);
-    expect(out.todaySummary?.totalCalories).toBe(1000);
-    expect(logRepo.find).not.toHaveBeenCalled();
+    expect(out.todaySummary.totalCalories).toBe(1000);
+    expect(out.todaySummary.totalSodium).toBe(500);
+    expect(logRepo.find).toHaveBeenCalledTimes(1);
+    expect(logRepo.find.mock.calls[0][0].take).toBeUndefined();
     expect(foodRepo.find).not.toHaveBeenCalled();
   });
 
-  it("uses seeded sugars threshold when sugars threshold is missing", async () => {
-    const { service, userRepo, goalRepo, summaryRepo, healthRepo, thresholdRepo, ruleRepo, mockApplier } = setup();
+  it("does not seed or invent a sugars threshold when it is missing (remaining sugar is null)", async () => {
+    const { service, userRepo, goalRepo, healthRepo, thresholdRepo, ruleRepo, mockApplier } = setup();
     userRepo.findOne.mockResolvedValueOnce({ id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
     goalRepo.find.mockResolvedValueOnce([{ id: 1, goalType: "maintenance", targetCalories: 2000, startDate: new Date(), endDate: null }]);
     healthRepo.find.mockResolvedValueOnce([{ conditionName: "diabetes", severity: "mild" }]);
@@ -106,24 +125,22 @@ describe("UserContextService", () => {
       warnings: [],
       rebalance: { status: "not_requested", adjustedNutrients: [] },
     });
-    summaryRepo.findOne.mockResolvedValueOnce({ totalCalories: 800, totalProtein: 30, totalCarbs: 100, totalFat: 20, totalSodium: 500, totalSugar: 10, totalSaturatedFat: 5, totalCholesterol: 100, totalPotassium: 500 });
-
     const out = await service.assembleRecipeGenerationContext(1, "2026-05-31", "lunch");
 
-    expect(out.remaining.sugarG).toBe(15);
-    expect(thresholdRepo.save).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ nutrient: "sugars", userId: 1, maxAmount: 25 })]),
-    );
+    // Thresholds are persisted at onboarding; reading context never writes them or applies rules.
+    expect(out.remaining.sugarG).toBeNull();
+    expect(thresholdRepo.save).not.toHaveBeenCalled();
+    expect(mockApplier.applyRules).not.toHaveBeenCalled();
   });
 
-  it("seedMissingConditionThresholds is a no-op when user has no conditions", async () => {
+  it("assembleContext does not query rules when user has no conditions", async () => {
     const { service, ruleRepo, userRepo } = setup();
     userRepo.findOne.mockResolvedValue({ id: 1, displayName: "U", age: 30, sex: "male", weight: 70, goalWeight: 68, height: 175, dietType: null, allergies: [], fitnessLevel: "active" });
     await service.assembleContext(1);
     expect(ruleRepo.find).not.toHaveBeenCalled();
   });
 
-  it("seedMissingConditionThresholds inserts threshold when rule exists but threshold missing", async () => {
+  it("does not insert a threshold on read when a rule exists but the threshold is missing", async () => {
     const { service, ruleRepo, thresholdRepo, healthRepo, goalRepo, userRepo, mockApplier } = setup();
     userRepo.findOne.mockResolvedValue({ id: 1, displayName: "U", age: 30, sex: "male", weight: 70, goalWeight: 68, height: 175, dietType: null, allergies: [], fitnessLevel: "active" });
     healthRepo.find.mockResolvedValue([{ conditionName: "hypertension", isActive: true }]);
@@ -139,12 +156,11 @@ describe("UserContextService", () => {
       rebalance: { status: "not_requested", adjustedNutrients: [] },
     });
     await service.assembleContext(1);
-    expect(thresholdRepo.save).toHaveBeenCalledWith(
-      expect.arrayContaining([expect.objectContaining({ nutrient: "sodium", userId: 1 })]),
-    );
+    expect(thresholdRepo.save).not.toHaveBeenCalled();
+    expect(mockApplier.applyRules).not.toHaveBeenCalled();
   });
 
-  it("seedMissingConditionThresholds skips nutrients that already have a threshold", async () => {
+  it("assembleContext leaves existing thresholds untouched", async () => {
     const { service, ruleRepo, thresholdRepo, healthRepo, goalRepo, userRepo } = setup();
     userRepo.findOne.mockResolvedValue({ id: 1, displayName: "U", age: 30, sex: "male", weight: 70, goalWeight: 68, height: 175, dietType: null, allergies: [], fitnessLevel: "active" });
     healthRepo.find.mockResolvedValue([{ conditionName: "hypertension", isActive: true }]);
@@ -157,5 +173,25 @@ describe("UserContextService", () => {
     ]);
     await service.assembleContext(1);
     expect(thresholdRepo.save).not.toHaveBeenCalled();
+  });
+
+  it("assembleRecipeGenerationContext adds fiber and phosphorus from today's logs", async () => {
+    const { service, userRepo, goalRepo, thresholdRepo, logRepo } = setup();
+    userRepo.findOne.mockResolvedValueOnce({ id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
+    goalRepo.find.mockResolvedValueOnce([{ id: 1, goalType: "maintenance", targetCalories: 2000, startDate: new Date(), endDate: null }]);
+    thresholdRepo.find.mockResolvedValueOnce([
+      { nutrient: "fiber", minAmount: 25, maxAmount: null, unit: "g" },
+      { nutrient: "phosphorus", minAmount: null, maxAmount: 800, unit: "mg" },
+    ]);
+    todayRows = [
+      { calories: "300", dietaryFibersG: "5", phosphorusMg: "200" },
+      { calories: "500", dietaryFibersG: "3", phosphorusMg: "150" },
+    ];
+    const out = await service.assembleRecipeGenerationContext(1, "2026-05-31", "lunch", -420);
+    expect(out.todayIntake).toMatchObject({ totalCalories: 800, totalFiber: 8, totalPhosphorus: 350 });
+    expect(out.remaining.fiberGMinRemaining).toBe(17);
+    expect(out.remaining.phosphorusMg).toBe(450);
+    const { start, end } = calendarDayBounds("2026-05-31", -420);
+    expect(logRepo.find).toHaveBeenCalledWith({ where: { userId: 1, delFlag: false, loggedAt: Between(start, end) } });
   });
 });

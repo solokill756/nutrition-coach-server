@@ -14,10 +14,17 @@ describe("FoodSemanticSearchService", () => {
       }),
     } as unknown as ConfigService;
     const vector = {
-      getQueryEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
+      getFoodQueryEmbedding: jest.fn().mockResolvedValue([0.1, 0.2, 0.3]),
     } as unknown as VectorService;
     return new FoodSemanticSearchService(dataSource, config, vector);
   }
+
+  it("embeds food queries with the food embedding method", async () => {
+    const queryMock = jest.fn().mockResolvedValue([]);
+    const service = makeService(queryMock);
+    await service.searchIngredient("chicken", 5);
+    expect((service as any).vectorService.getFoodQueryEmbedding).toHaveBeenCalledWith("chicken");
+  });
 
   it("maps semantic food candidates", async () => {
     const queryMock = jest.fn().mockResolvedValue([

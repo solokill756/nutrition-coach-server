@@ -87,6 +87,23 @@ describe("MealsService", () => {
     const copied = await service.copyPrevious(1, { sourceMealId: 7, name: "Copy" } as any);
     expect(copied.id).toBe(8);
   });
+  it("getById includes core macros in nested food", async () => {
+    const { service, qb, mealFoodRepo, foodRepo } = setup();
+    qb.getOne.mockResolvedValueOnce({ id: 5, userId: 1, name: "A", shareWith: 1, delFlag: false, createdAt: new Date(), updatedAt: new Date() });
+    mealFoodRepo.find.mockResolvedValueOnce([{ id: 1, mealId: 5, foodId: 99, quantity: "1", order: 0, unit: "g" }]);
+    foodRepo.find.mockResolvedValueOnce([
+      { id: 99, foodName: "Rice", category: null, servingUnit: "g", servingSize: 100, calories: 130, protein: 2.7, carbs: 28, fat: 0.3, fiber: 0.4, sodium: 1, isVerified: true },
+    ]);
+    const detail: any = await service.getById(1, 5);
+    expect(detail.items[0].food).toMatchObject({
+      proteinG: 2.7,
+      totalCarbohydratesG: 28,
+      totalFatG: 0.3,
+      dietaryFibersG: 0.4,
+      sodiumMg: 1,
+    });
+  });
+
   it("keeps soft-deleted meals hidden from library reads", async () => {
     const { service, qb } = setup();
     qb.getOne.mockResolvedValueOnce(null);

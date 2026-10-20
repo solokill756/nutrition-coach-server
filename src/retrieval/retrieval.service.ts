@@ -21,18 +21,32 @@ const RRF_K = 60;
 const CROSS_ENCODER_LITE_TOPK = 10;
 const CROSS_ENCODER_BLEND_WEIGHT = 0.4;
 
+const REBUILD_DEBOUNCE_MS = 2000;
+/** RAG_QUERY_EMBED_TIMEOUT_MS default: past this, the request goes on without vector scores (BM25 only). */
+const DEFAULT_QUERY_EMBED_TIMEOUT_MS = 3000;
+
+type QueryEmbedder = (text: string) => Promise<number[]>;
+
+/** Everything derived from one corpus load; swapped in as a single unit. */
+type RagIndex = {
+  docs: DomainDoc[];
+  bm25Searcher: Bm25Searcher;
+  /** Lowercase domain -> doc ids. */
+  domainToDocIds: Map<string, string[]>;
+  /** Doc ID -> lowercase domain. */
+  docIdToDomain: Map<string, string>;
+};
+
 @Injectable()
 export class RetrievalService implements OnModuleInit {
-  private docs: DomainDoc[] = [];
   private isIndexReady = false;
   private isVectorReady = false;
   private hybridMode: HybridSearchMode = "hybrid";
-  private bm25Searcher: Bm25Searcher;
   private crossEncoder: CrossEncoderReranker;
-  /** Lowercase domain -> doc ids (rebuilt when docs load). */
-  private domainToDocIds: Map<string, string[]> = new Map();
-  /** Doc ID -> Lowercase domain cache (rebuilt when docs load). */
-  private docIdToDomain: Map<string, string> = new Map();
+  private index: RagIndex;
+  private rebuildRunning: Promise<void> | null = null;
+  private rebuildAgain = false;
+  private rebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     private readonly config: ConfigService,
@@ -40,7 +54,7 @@ export class RetrievalService implements OnModuleInit {
     private readonly postgresRagService: PostgresRagService,
     private readonly ollamaService: OllamaService,
   ) {
-    this.bm25Searcher = new Bm25Searcher(config);
+    this.index = this.buildIndex([]);
     this.crossEncoder = new CrossEncoderReranker(ollamaService, config);
   }
 
@@ -55,30 +69,21 @@ export class RetrievalService implements OnModuleInit {
       else if (retrievalMode === "vector-only") this.hybridMode = "vector-only";
       else this.hybridMode = "hybrid";
 
-      await this.loadDomainData();
-      this.buildDomainDocIdMap();
+      this.index = this.buildIndex(await this.loadDomainData());
       console.log(`[RETRIEVAL] 📂 Indexed domains: ${this.getIndexedDomains().join(", ") || "(none)"}`);
-      this.buildIndices();
       this.isIndexReady = true;
 
+      // No boot embedding sync for RAG: it re-embedded chunks with a different text and deleted
+      // the embeddings of inactive chunks. The ingest pipeline (and admin edits) own rag_embeddings.
       const syncEmbeddingsOnBoot = String(
-        this.config.get<string>("POSTGRES_SYNC_EMBEDDINGS_ON_BOOT") || "true"
+        this.config.get<string>("POSTGRES_SYNC_EMBEDDINGS_ON_BOOT") || "false"
       ).toLowerCase() === "true";
-
       if (syncEmbeddingsOnBoot) {
-        const docsForEmbedding = this.docs.map((doc) => ({
-          id: doc.id,
-          text: `${doc.title} ${doc.content}`.substring(0, 2000),
-        }));
-        const syncStats = await this.vectorService.ensureEmbeddingsForDocuments(docsForEmbedding);
-        this.isVectorReady = this.vectorService.isServiceReady();
-        console.log(
-          `[RETRIEVAL]  Vector sync: +${syncStats.added}, ~${syncStats.updated}, -${syncStats.removed}, unchanged ${syncStats.skipped}, failed ${syncStats.failed}`
+        console.warn(
+          "[RETRIEVAL]  POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=true is ignored: the ingest pipeline owns RAG embeddings"
         );
-      } else {
-        this.isVectorReady = this.vectorService.isServiceReady();
-        console.log("[RETRIEVAL]  Skip vector sync on boot (POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=false)");
       }
+      this.isVectorReady = this.vectorService.isServiceReady();
 
       if (!this.isVectorReady && this.hybridMode !== "bm25-only") {
         console.warn("[RETRIEVAL]  Vector not ready; using BM25-only for retrieval until embeddings are available.");
@@ -87,7 +92,7 @@ export class RetrievalService implements OnModuleInit {
 
       const t1 = performance.now();
       console.log(`[RETRIEVAL]  Initialized in ${(t1 - t0).toFixed(0)}ms`);
-      console.log(`[RETRIEVAL]  Stats: ${this.docs.length} docs`);
+      console.log(`[RETRIEVAL]  Stats: ${this.index.docs.length} docs`);
       console.log(`[RETRIEVAL]  Hybrid Mode: ${this.hybridMode.toUpperCase()}`);
     } catch (error) {
       console.error("[RETRIEVAL]  Initialization failed:", error);
@@ -97,29 +102,38 @@ export class RetrievalService implements OnModuleInit {
     }
   }
 
-  private buildIndices() {
-    this.docs = excludeFoodDomainDocs(this.docs);
-    this.buildDomainDocIdMap();
-    if (this.docs.length === 0) {
-      console.warn("[RETRIEVAL]  No documents to index");
-      return;
-    }
-    this.bm25Searcher.build(this.docs);
-  }
-
-  private buildDomainDocIdMap() {
-    this.domainToDocIds = new Map();
-    this.docIdToDomain = new Map();
-    for (const doc of this.docs) {
+  /** Builds a complete, independent index; touches no instance state. */
+  private buildIndex(rawDocs: DomainDoc[]): RagIndex {
+    const docs = excludeFoodDomainDocs(rawDocs);
+    const bm25Searcher = new Bm25Searcher(this.config);
+    const domainToDocIds = new Map<string, string[]>();
+    const docIdToDomain = new Map<string, string>();
+    for (const doc of docs) {
       const dom = String(doc.metadata?.domain || "unknown").toLowerCase().trim() || "unknown";
-      if (!this.domainToDocIds.has(dom)) this.domainToDocIds.set(dom, []);
-      this.domainToDocIds.get(dom)!.push(doc.id);
-      this.docIdToDomain.set(doc.id, dom);
+      if (!domainToDocIds.has(dom)) domainToDocIds.set(dom, []);
+      domainToDocIds.get(dom)!.push(doc.id);
+      docIdToDomain.set(doc.id, dom);
     }
+    if (docs.length === 0) {
+      console.warn("[RETRIEVAL]  No documents to index");
+    } else {
+      bm25Searcher.build(docs);
+    }
+    return { docs, bm25Searcher, domainToDocIds, docIdToDomain };
   }
 
   getIndexedDomains(): string[] {
-    return Array.from(this.domainToDocIds.keys()).sort();
+    return Array.from(this.index.domainToDocIds.keys()).sort();
+  }
+
+  /** Coalesce rebuild requests made within the debounce window into one rebuild. */
+  scheduleRebuild(): void {
+    if (this.rebuildTimer) clearTimeout(this.rebuildTimer);
+    this.rebuildTimer = setTimeout(() => {
+      this.rebuildTimer = null;
+      void this.rebuildIndex();
+    }, REBUILD_DEBOUNCE_MS);
+    this.rebuildTimer.unref?.();
   }
 
   async retrieve(
@@ -130,16 +144,20 @@ export class RetrievalService implements OnModuleInit {
   ): Promise<RetrievalResult[]> {
     const t0 = performance.now();
 
+    // Snapshot: a rebuild swapping this.index mid-call must not mix old and new structures.
+    const index = this.index;
+
     try {
-      if (!this.isIndexReady || this.docs.length === 0) return [];
+      if (!this.isIndexReady || index.docs.length === 0) return [];
 
       const subQueries = await this.expandQuery(question, hints);
       console.log(`[RETRIEVAL]  Expanded query into ${subQueries.length} terms: ${subQueries.join(", ")}`);
 
+      const embedQuery = this.createQueryEmbedder();
       const allResults = new Map<string, number>();
 
       for (const query of subQueries) {
-        const results = await this.performSearch(query, Math.max(topK * 2, 20), hints, forceMode);
+        const results = await this.performSearch(index, query, Math.max(topK * 2, 20), hints, embedQuery, forceMode);
         for (let i = 0; i < results.length; i++) {
           const rank = i + 1;
           const score = 1 / (RRF_K + rank);
@@ -152,7 +170,7 @@ export class RetrievalService implements OnModuleInit {
           .sort((a, b) => b[1] - a[1])
           .slice(0, topK)
           .map(([id, score]) => {
-            const doc = this.docs.find((d) => d.id === id);
+            const doc = index.docs.find((d) => d.id === id);
             return doc ? this.formatRetrievalResult(doc, score) : null;
           })
           .filter((r): r is RetrievalResult => r !== null);
@@ -164,17 +182,24 @@ export class RetrievalService implements OnModuleInit {
         .slice(0, topK * 3)
         .map(([id]) => id);
 
-      const candidateDocs = this.docs.filter((d) => finalDocIds.includes(d.id));
+      const candidateDocs = index.docs.filter((d) => finalDocIds.includes(d.id));
       const candidateDocIds = candidateDocs.map((doc) => doc.id);
 
-      const queryEmbedding = await this.vectorService.getQueryEmbedding(question);
+      // A slow or failed query embedding degrades the re-rank to RRF only instead of failing the request.
+      let queryEmbedding: number[] | null = null;
+      try {
+        queryEmbedding = await embedQuery(question);
+      } catch (error) {
+        console.warn(`[RETRIEVAL]  Query embedding unavailable; re-ranking without semantic scores: ${(error as Error)?.message ?? error}`);
+      }
       const pgSemantic = new Map<string, number>();
-      if (this.vectorService.docEmbeddingsInPostgres() && candidateDocIds.length > 0) {
+      if (queryEmbedding && this.vectorService.docEmbeddingsInPostgres() && candidateDocIds.length > 0) {
         const ranked = await this.vectorService.vectorSearch(queryEmbedding, candidateDocIds, candidateDocIds.length);
         for (const r of ranked) pgSemantic.set(r.docId, r.score);
       }
 
-      const scoredDocs = candidateDocs.map((doc) => {
+      const scoredDocs = candidateDocs.map((doc): { doc: DomainDoc; semanticScore: number | null } => {
+        if (!queryEmbedding) return { doc, semanticScore: null };
         if (pgSemantic.size > 0) {
           const s = pgSemantic.get(doc.id);
           if (typeof s === "number") return { doc, semanticScore: s };
@@ -196,13 +221,16 @@ export class RetrievalService implements OnModuleInit {
         : 1.0;
 
       const rankedDocs = scoredDocs.map(({ doc, semanticScore }) => {
+        const normRrf = (allResults.get(doc.id) || 0) / maxRrf;
+        // Without a query embedding the RRF score stands in for the semantic score.
+        const baseScore = semanticScore ?? normRrf;
         const crossScore = crossEncoderScores.get(doc.id);
         if (typeof crossScore === "number") {
-          const score = (1 - CROSS_ENCODER_BLEND_WEIGHT) * semanticScore + CROSS_ENCODER_BLEND_WEIGHT * crossScore;
+          const score = (1 - CROSS_ENCODER_BLEND_WEIGHT) * baseScore + CROSS_ENCODER_BLEND_WEIGHT * crossScore;
           return { doc, score, semanticScore, crossScore };
         }
-        const normRrf = (allResults.get(doc.id) || 0) / maxRrf;
-        return { doc, score: 0.4 * semanticScore + 0.6 * normRrf, semanticScore };
+        const score = semanticScore === null ? normRrf : 0.4 * semanticScore + 0.6 * normRrf;
+        return { doc, score, semanticScore };
       });
 
       const diversifiedDocs = this.applyDiversityRerank(
@@ -226,14 +254,20 @@ export class RetrievalService implements OnModuleInit {
   }
 
   private formatRetrievalResult(doc: DomainDoc, score: number): RetrievalResult {
+    const page = Number(doc.metadata?.page_from);
+    const blockKind = doc.metadata?.block_kind;
     return {
       id: doc.id,
       source: doc.source,
       title: doc.title,
-      content: doc.content.substring(0, 500) + (doc.content.length > 500 ? "..." : ""),
+      // Whole chunk: callers size the prompt (buildRagReferenceBlock); a prefix
+      // can end mid-number.
+      content: doc.content,
       domain: String(doc.metadata?.domain || "unknown"),
       score: parseFloat(Number(score || 0).toFixed(4)),
       link: extractLink(doc),
+      page: Number.isFinite(page) && page > 0 ? page : undefined,
+      blockKind: typeof blockKind === "string" ? blockKind : undefined,
       isChunk: isChunkDoc(doc),
       parentId: getParentId(doc),
       chunkIndex: getChunkIndex(doc),
@@ -301,33 +335,67 @@ export class RetrievalService implements OnModuleInit {
     return this.hybridMode;
   }
 
+  /**
+   * Query embedding for one retrieve() call, capped at RAG_QUERY_EMBED_TIMEOUT_MS (default 3000).
+   * On timeout the Ollama request is aborted; after the first failure the rest of the request
+   * skips the vector stage, so one request waits for the timeout at most once.
+   * (AbortController + setTimeout rather than AbortSignal.timeout: same behaviour, and it runs
+   * under Jest fake timers.)
+   */
+  private createQueryEmbedder(): QueryEmbedder {
+    const configured = Number(this.config.get<string>("RAG_QUERY_EMBED_TIMEOUT_MS"));
+    const timeoutMs = configured > 0 ? configured : DEFAULT_QUERY_EMBED_TIMEOUT_MS;
+    let failure: Error | null = null;
+    return async (text: string) => {
+      if (failure) throw failure;
+      const controller = new AbortController();
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error(`Query embedding timed out after ${timeoutMs} ms`));
+        }, timeoutMs);
+      });
+      try {
+        return await Promise.race([this.vectorService.getQueryEmbedding(text, controller.signal), timeout]);
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+        throw failure;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+  }
+
   private async performSearch(
+    index: RagIndex,
     query: string,
     topK: number,
     hints: RetrievalHints,
+    embedQuery: QueryEmbedder,
     forceMode?: HybridSearchMode
   ): Promise<RetrievalResult[]> {
     const mode = forceMode ?? this.getEffectiveHybridMode();
 
     if (mode === "vector-only") {
-      return this.performVectorOnlySearch(query, topK, hints);
+      return this.performVectorOnlySearch(index, query, topK, hints, embedQuery);
     }
 
-    const bm25Results = this.bm25Searcher.search(query, hints);
+    const bm25Results = index.bm25Searcher.search(query, hints);
 
     if (mode === "bm25-only") {
-      return this.bm25RankedToResults(bm25Results, topK);
+      return this.bm25RankedToResults(index, bm25Results, topK);
     }
 
     try {
-      const queryEmbedding = await this.vectorService.getQueryEmbedding(query);
+      const queryEmbedding = await embedQuery(query);
       const vectorSearchResults = await this.vectorService.vectorSearchAll(queryEmbedding, topK * 2);
 
       let filteredVectorResults = vectorSearchResults;
       const allowed = getAllowedDomains(hints);
       if (allowed) {
         filteredVectorResults = vectorSearchResults.filter((r) => {
-          const dom = this.docIdToDomain.get(r.docId);
+          const dom = index.docIdToDomain.get(r.docId);
           return dom && allowed.has(dom);
         });
       }
@@ -338,7 +406,7 @@ export class RetrievalService implements OnModuleInit {
       return Array.from(fusion.entries())
         .sort((a, b) => b[1] - a[1])
         .map(([id, score]) => {
-          const doc = this.docs.find((d) => d.id === id);
+          const doc = index.docs.find((d) => d.id === id);
           return doc
             ? { id: doc.id, source: doc.source, title: doc.title, content: doc.content, domain: String(doc.metadata?.domain || ""), score }
             : null;
@@ -346,16 +414,17 @@ export class RetrievalService implements OnModuleInit {
         .filter((r) => r !== null) as RetrievalResult[];
     } catch (error) {
       console.warn("[RETRIEVAL] Hybrid vector stage failed; BM25-only fallback:", error);
-      return this.bm25RankedToResults(bm25Results, topK);
+      return this.bm25RankedToResults(index, bm25Results, topK);
     }
   }
 
   private bm25RankedToResults(
+    index: RagIndex,
     results: Array<{ docId: string; score: number; rank: number }>,
     topK: number
   ): RetrievalResult[] {
     return results.slice(0, topK).map((r) => {
-      const doc = this.docs.find((d) => d.id === r.docId);
+      const doc = index.docs.find((d) => d.id === r.docId);
       return doc
         ? { id: doc.id, source: doc.source, title: doc.title, content: doc.content, domain: String(doc.metadata?.domain || ""), score: r.score }
         : null;
@@ -363,35 +432,37 @@ export class RetrievalService implements OnModuleInit {
   }
 
   private async performVectorOnlySearch(
+    index: RagIndex,
     query: string,
     topK: number,
-    hints: RetrievalHints
+    hints: RetrievalHints,
+    embedQuery: QueryEmbedder
   ): Promise<RetrievalResult[]> {
     if (!this.isVectorReady) {
-      return this.bm25RankedToResults(this.bm25Searcher.search(query, hints), topK);
+      return this.bm25RankedToResults(index, index.bm25Searcher.search(query, hints), topK);
     }
     try {
-      const queryEmbedding = await this.vectorService.getQueryEmbedding(query);
+      const queryEmbedding = await embedQuery(query);
       const vectorSearchResults = await this.vectorService.vectorSearchAll(queryEmbedding, topK * 2);
 
       let filtered = vectorSearchResults;
       const allowed = getAllowedDomains(hints);
       if (allowed) {
         filtered = vectorSearchResults.filter((r) => {
-          const dom = this.docIdToDomain.get(r.docId);
+          const dom = index.docIdToDomain.get(r.docId);
           return dom && allowed.has(dom);
         });
       }
 
       return filtered.slice(0, topK).map((r) => {
-        const doc = this.docs.find((d) => d.id === r.docId);
+        const doc = index.docs.find((d) => d.id === r.docId);
         return doc
           ? { id: doc.id, source: doc.source, title: doc.title, content: doc.content, domain: String(doc.metadata?.domain || ""), score: r.score }
           : null;
       }).filter((r) => r !== null) as RetrievalResult[];
     } catch (error) {
       console.warn("[RETRIEVAL]  vector-only search failed; BM25 fallback:", error);
-      return this.bm25RankedToResults(this.bm25Searcher.search(query, hints), topK);
+      return this.bm25RankedToResults(index, index.bm25Searcher.search(query, hints), topK);
     }
   }
 
@@ -479,29 +550,55 @@ export class RetrievalService implements OnModuleInit {
       vectorReady: this.isVectorReady,
       hybridMode: this.hybridMode,
       effectiveHybridMode: this.getEffectiveHybridMode(),
-      totalDocs: this.docs.length,
+      totalDocs: this.index.docs.length,
       vectorStats: this.vectorService.getStats(),
     };
   }
 
   getIndexStats() {
     return {
-      totalDocs: this.docs.length,
+      totalDocs: this.index.docs.length,
       isReady: this.isIndexReady,
-      bm25Params: this.bm25Searcher.getBm25Params(),
+      bm25Params: this.index.bm25Searcher.getBm25Params(),
     };
   }
 
-  async rebuildIndex() {
-    console.log("[RETRIEVAL]  Rebuilding index...");
-    this.isIndexReady = false;
-    await this.loadDomainData();
-    this.buildIndices();
-    this.isIndexReady = true;
-    console.log("[RETRIEVAL]  Index rebuilt");
+  /**
+   * Hot rebuild: the new index is built off to the side and swapped in as one unit,
+   * so retrieve() keeps using the old index meanwhile. Concurrent calls collapse into
+   * "run once more when the current rebuild finishes". Failures keep the old index.
+   */
+  rebuildIndex(): Promise<void> {
+    if (this.rebuildRunning) {
+      this.rebuildAgain = true;
+      return this.rebuildRunning;
+    }
+    this.rebuildRunning = (async () => {
+      try {
+        do {
+          this.rebuildAgain = false;
+          await this.rebuildOnce();
+        } while (this.rebuildAgain);
+      } finally {
+        this.rebuildRunning = null;
+      }
+    })();
+    return this.rebuildRunning;
   }
 
-  private async loadDomainData() {
+  private async rebuildOnce(): Promise<void> {
+    console.log("[RETRIEVAL]  Rebuilding index...");
+    try {
+      const next = this.buildIndex(await this.loadDomainData());
+      this.index = next;
+      this.isIndexReady = true;
+      console.log(`[RETRIEVAL]  Index rebuilt (${next.docs.length} docs)`);
+    } catch (error) {
+      console.error("[RETRIEVAL]  Index rebuild failed; keeping previous index:", error);
+    }
+  }
+
+  private async loadDomainData(): Promise<DomainDoc[]> {
     const usePostgresStorage = String(
       this.config.get<string>("USE_POSTGRES_STORAGE") || "false"
     ).toLowerCase() === "true";
@@ -514,12 +611,14 @@ export class RetrievalService implements OnModuleInit {
     await this.postgresRagService.ensureSchema();
     const corpus = await this.postgresRagService.loadCorpus();
     if (corpus.docs.length === 0) {
-      throw new Error("DB-only mode found no RAG docs in PostgreSQL. Run the sync/import pipeline first.");
+      console.warn("[DATA]  RAG store is empty; retrieval returns nothing until knowledge is ingested.");
     }
 
-    this.docs = excludeFoodDomainDocs(corpus.docs).filter((doc) => doc?.id && doc?.content);
-    this.docs = this.docs.map(normalizeDocDomain);
+    const docs = excludeFoodDomainDocs(corpus.docs)
+      .filter((doc) => doc?.id && doc?.content)
+      .map(normalizeDocDomain);
     console.log("[DATA]  Loaded corpus from PostgreSQL (DB-only)");
-    console.log(`[DATA]  Loaded: ${this.docs.length} docs`);
+    console.log(`[DATA]  Loaded: ${docs.length} docs`);
+    return docs;
   }
 }

@@ -1,3 +1,5 @@
+import type { MealSplitsPercent } from "../nutrition/meal-splits";
+
 export type AuthNutritionTargets = {
   targetCalories: number;
   bmr: number;
@@ -38,6 +40,8 @@ export type AuthUser = {
   activityLevel?: string | null;
   mealPlanningFrequency?: string | null;
   barriers?: string[];
+  /** Share of the day's calories per meal, in whole percent (default when never set). */
+  mealSplits?: MealSplitsPercent;
   /** Active condition names from UserHealthCondition. */
   conditionTypes?: string[];
   /** From active goal + thresholds after onboarding; null if incomplete or missing data. */

@@ -39,9 +39,14 @@ export class ConditionNutrientUnitService {
     if (source === "mg" && canonical === "ug") return { amount: this.round(amount * 1000), unit: "ug" };
     if (source === "ug" && canonical === "mg") return { amount: this.round(amount / 1000), unit: "mg" };
     if ((source === "%kcal" || source === "% kcal") && canonical === "g") {
-      return { amount: this.round(((targetCalories * amount) / 100) / 9), unit: "g" };
+      return { amount: this.round(((targetCalories * amount) / 100) / this.kcalPerGram(nutrient)), unit: "g" };
     }
     throw new Error("UNIT_INCOMPATIBLE");
+  }
+
+  private kcalPerGram(nutrientKey: string): 4 | 9 {
+    const key = this.normalizeNutrient(nutrientKey);
+    return key === "fat" || key === "saturatedfat" ? 9 : 4;
   }
 
   private round(value: number): number {

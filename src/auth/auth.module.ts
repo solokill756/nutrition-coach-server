@@ -20,6 +20,7 @@ import { DiaryController } from "../nutrition/diary.controller";
 import { LogFoodService } from "../nutrition/log-food.service";
 import { DiaryService } from "../nutrition/diary.service";
 import { LogFoodSchemaRepairService } from "../nutrition/log-food-schema-repair.service";
+import { UserSchemaRepairService } from "../users/user-schema-repair.service";
 import { AuthController } from "./auth.controller";
 import { JwtStrategy } from "./jwt.strategy";
 import { AppUserEntity } from "./entities/app-user.entity";
@@ -51,7 +52,14 @@ import { AuthService } from "./auth.service";
     WeightModule,
   ],
   controllers: [AuthController, LogFoodController, DiaryController],
-  providers: [AuthService, JwtStrategy, LogFoodService, DiaryService, LogFoodSchemaRepairService],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    LogFoodService,
+    DiaryService,
+    LogFoodSchemaRepairService,
+    UserSchemaRepairService,
+  ],
   exports: [AuthService, DiaryService],
 })
 export class AuthModule {}

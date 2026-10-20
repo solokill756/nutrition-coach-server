@@ -18,7 +18,12 @@ import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-un
 import { buildConditionRelatedThresholds } from "../nutrition/condition-related-thresholds";
 import { WeightEntity } from "../weight/entities/weight.entity";
 import { WeightService } from "../weight/weight.service";
-import { DashboardAlertService, DashboardDailyTotals, DashboardAlert } from "./dashboard-alert.service";
+import {
+  DashboardAlertService,
+  DashboardDailyTotals,
+  DashboardAlert,
+  DashboardHealthNutrients,
+} from "./dashboard-alert.service";
 import { DashboardAiService, DashboardAiSuggestion, DashboardAiSuggestionContext } from "./dashboard-ai.service";
 import { DashboardEventBus, DiaryChangedEvent } from "./dashboard-event-bus";
 
@@ -79,6 +84,7 @@ export interface DashboardTodayResponse {
     weightLogged: boolean;
     isCompleted: boolean;
   };
+  healthNutrients: DashboardHealthNutrients;
   micronutrients: Record<string, number>;
 }
 
@@ -227,6 +233,7 @@ export class DashboardService implements OnModuleDestroy {
         weightLogged,
         isCompleted: foodLogged && waterLogged && exerciseLogged && weightLogged,
       },
+      healthNutrients: this.dashboardAlertService.buildHealthNutrients(base.dailyTotals, base.thresholds),
       micronutrients: {
         calcium: base.dailyTotals.calcium,
         iron: base.dailyTotals.iron,
@@ -287,7 +294,7 @@ export class DashboardService implements OnModuleDestroy {
 
     const ctx: DashboardAiSuggestionContext = {
       user: {
-        displayName: base.user.displayName,
+        age: base.user.age ?? null,
         sex: base.user.sex,
         weightKg: base.currentKgFromLog ?? base.userWeight,
         goalWeightKg: base.user.goalWeight != null && Number.isFinite(Number(base.user.goalWeight)) ? Number(base.user.goalWeight) : null,

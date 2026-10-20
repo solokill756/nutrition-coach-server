@@ -1,6 +1,7 @@
 import axios from "axios";
 import { ConfigService } from "@nestjs/config";
 import { AiIngredientVisionService } from "./ai-ingredient-vision.service";
+import { GeminiVisionClient } from "../ollama/gemini-vision.client";
 
 jest.mock("axios");
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -15,7 +16,7 @@ describe("AiIngredientVisionService", () => {
       return map[key];
     }),
   } as unknown as ConfigService;
-  const service = new AiIngredientVisionService(config);
+  const service = new AiIngredientVisionService(new GeminiVisionClient(config));
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -34,6 +35,15 @@ describe("AiIngredientVisionService", () => {
 
   it("returns an empty list for malformed JSON", () => {
     expect(service.parseIngredients("not json")).toEqual([]);
+  });
+
+  it("skips null and non-object items instead of throwing (no 500)", () => {
+    expect(service.parseIngredients('{"ingredients":[null]}')).toEqual([]);
+    expect(service.parseIngredients('{"ingredients":[null, 3, "egg", {"name":"rice","confidence":0.6}]}')).toEqual([
+      { name: "rice", confidence: 0.6 },
+    ]);
+    expect(service.parseIngredients("[null]")).toEqual([]);
+    expect(service.parseIngredients("null")).toEqual([]);
   });
 
   it("recognizes ingredients from image url", async () => {

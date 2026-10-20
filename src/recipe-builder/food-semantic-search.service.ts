@@ -46,7 +46,7 @@ export class FoodSemanticSearchService implements OnModuleInit {
     const safeTopK = Math.min(Math.max(Number(topK) || 5, 3), 5);
 
     try {
-      const embedding = await this.vectorService.getQueryEmbedding(query);
+      const embedding = await this.vectorService.getFoodQueryEmbedding(query);
       const rows = await this.dataSource.query(
         `
           SELECT
@@ -107,7 +107,7 @@ export class FoodSemanticSearchService implements OnModuleInit {
     try {
       // Step 1: Generate all embeddings in parallel
       const embeddings = await Promise.all(
-        ingredients.map(({ name }) => this.vectorService.getQueryEmbedding(name.trim())),
+        ingredients.map(({ name }) => this.vectorService.getFoodQueryEmbedding(name.trim())),
       );
 
       // Step 2: Single batch query

@@ -8,3 +8,5 @@ FoodData_Central_*/
 postman/environment.json
 postman/report.html
 *.tsbuildinfo
+.superpowers/
+storage/

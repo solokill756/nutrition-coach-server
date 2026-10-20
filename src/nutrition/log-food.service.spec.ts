@@ -207,6 +207,29 @@ describe("LogFoodService", () => {
     });
   });
 
+  it("mapRowsToApiItems includes core macros in nested food", async () => {
+    const { service, foodRepo } = createService();
+    foodRepo.find.mockResolvedValueOnce([
+      { id: 99, foodName: "Rice", category: null, servingUnit: "g", servingSize: 100, calories: 130, protein: 2.7, carbs: 28, fat: 0.3, fiber: 0.4, sodium: 1, isVerified: true },
+    ]);
+    const row = {
+      id: 22, userId: 2, foodId: 99, foodName: "Rice", mealId: null, recipeId: null, type: 1,
+      loggedAt: new Date("2026-06-07T07:00:00.000Z"), meal: 1, mealType: "breakfast",
+      numberOfServings: "1", servingSize: "100", unit: "g", calories: "130",
+    } as any;
+
+    const items = await service.mapRowsToApiItems([row]);
+
+    expect(items[0].food).toMatchObject({
+      calories: 130,
+      proteinG: 2.7,
+      totalCarbohydratesG: 28,
+      totalFatG: 0.3,
+      dietaryFibersG: 0.4,
+      sodiumMg: 1,
+    });
+  });
+
   // Task 3 regression tests
   it("list does not filter out logs linked to soft-deleted meal templates", async () => {
     const { service, qb, logRepo } = createService();

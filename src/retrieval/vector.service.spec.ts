@@ -1,11 +1,12 @@
 import { VectorService } from "./vector.service";
 
-function createConfig(pg = false) {
+function createConfig(pg = false, extra: Record<string, string> = {}) {
   return {
     get: jest.fn((k: string) => {
       const map: Record<string, string> = {
         USE_CHUNKING: "false",
         POSTGRES_ENABLE_PGVECTOR: pg ? "true" : "false",
+        ...extra,
       };
       return map[k];
     }),
@@ -41,11 +42,87 @@ describe("VectorService", () => {
     expect(service.cosineSimilarity([1, 0], [1, 0])).toBeCloseTo(1, 5);
   });
 
+  const okJson = (body: unknown) => ({ ok: true, json: async () => body }) as any;
+
+  it("getQueryEmbedding keeps Vietnamese diacritics and uses the RAG model", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1, 0.2]] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    await service.getQueryEmbedding("  Người tiểu đường ");
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/embed$/),
+      expect.objectContaining({ body: JSON.stringify({ model: "bge-m3", input: ["Người tiểu đường"] }) }),
+    );
+  });
+
+  function trackInFlight() {
+    const state = { inFlight: 0, maxInFlight: 0 };
+    fetchMock.mockImplementation(async (_url: string, init: any) => {
+      state.inFlight++;
+      state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+      await new Promise((r) => setTimeout(r, 1));
+      state.inFlight--;
+      const input: string[] = JSON.parse(init.body).input;
+      return okJson({ embeddings: input.map((t) => [Number(t.replace("t", ""))]) });
+    });
+    return state;
+  }
+
+  it("embedDocuments sends one text per request by default (RAG_INGEST_EMBED_BATCH_SIZE=1), sequentially", async () => {
+    const state = trackInFlight();
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    const texts = Array.from({ length: 3 }, (_, i) => `t${i}`);
+    const out = await service.embedDocuments(texts);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    for (const call of fetchMock.mock.calls) expect(JSON.parse(call[1].body).input).toHaveLength(1);
+    expect(state.maxInFlight).toBe(1);
+    expect(out).toEqual([[0], [1], [2]]);
+  });
+
+  it("embedDocuments honours RAG_INGEST_EMBED_BATCH_SIZE, sequentially and in order", async () => {
+    const state = trackInFlight();
+    const service = new VectorService(createConfig(false, { RAG_INGEST_EMBED_BATCH_SIZE: "8" }), createPostgres(false));
+    const texts = Array.from({ length: 10 }, (_, i) => `t${i}`);
+    const out = await service.embedDocuments(texts);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).input).toHaveLength(8);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).input).toHaveLength(2);
+    expect(state.maxInFlight).toBe(1);
+    expect(out).toEqual(texts.map((_, i) => [i]));
+  });
+
+  it("getQueryEmbedding passes the abort signal to the Ollama request", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    const controller = new AbortController();
+    await service.getQueryEmbedding("signal test", controller.signal);
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
+  it("embeds RAG text with RAG_EMBEDDING_MODEL and ignores POSTGRES_EMBEDDING_MODEL", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    const legacy = new VectorService(createConfig(false, { POSTGRES_EMBEDDING_MODEL: "nomic-embed-text" }), createPostgres(false));
+    await legacy.embedDocuments(["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).model).toBe("bge-m3");
+    const custom = new VectorService(createConfig(false, { RAG_EMBEDDING_MODEL: "custom-rag" }), createPostgres(false));
+    await custom.embedDocuments(["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).model).toBe("custom-rag");
+  });
+
+  it("getFoodQueryEmbedding keeps the old normalization and model", async () => {
+    fetchMock.mockResolvedValue(okJson({ embedding: [0.5, 0.6] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    const out = await service.getFoodQueryEmbedding("Người tiểu đường");
+    expect(out).toEqual([0.5, 0.6]);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringMatching(/\/api\/embeddings$/),
+      expect.objectContaining({
+        body: JSON.stringify({ model: "nomic-embed-text", prompt: "nguoi tieu duong", stream: false }),
+      }),
+    );
+  });
+
   it("getQueryEmbedding caches results", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ embedding: [1, 2, 3] }),
-    } as any);
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[1, 2, 3]] }));
     const service = new VectorService(createConfig(false), createPostgres(false));
     const a = await service.getQueryEmbedding("hello");
     const b = await service.getQueryEmbedding("hello");
@@ -55,10 +132,7 @@ describe("VectorService", () => {
   });
 
   it("vectorSearch works in memory mode", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ embedding: [1, 0] }),
-    } as any);
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[1, 0]] }));
     const service = new VectorService(createConfig(false), createPostgres(false));
     await service.onModuleInit();
     await service.embedDocument("doc a", "a");
@@ -76,10 +150,7 @@ describe("VectorService", () => {
   });
 
   it("clearEmbeddings resets internal state", async () => {
-    fetchMock.mockResolvedValue({
-      ok: true,
-      json: async () => ({ embedding: [1, 0] }),
-    } as any);
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[1, 0]] }));
     const service = new VectorService(createConfig(false), createPostgres(false));
     await service.embedDocument("doc a", "a");
     await service.clearEmbeddings();

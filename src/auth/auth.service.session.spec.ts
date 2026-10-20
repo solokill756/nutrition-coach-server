@@ -13,6 +13,7 @@ const buildService = () => {
   const unused = {} as never;
   const service = new AuthService(
     config, jwt, unused, unused, unused, unused, sessionRepo as never, unused, unused, unused, unused, unused,
+    unused,
   );
   return { service, jwt, sessionRepo };
 };

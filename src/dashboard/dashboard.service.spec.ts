@@ -23,6 +23,7 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
       id: 1,
       displayName: "Alex",
       avatarUrl: null,
+      age: 34,
       sex: "female",
       weight: 60,
       goalWeight: 58,
@@ -128,6 +129,14 @@ describe("DashboardService AI suggestion", () => {
     warnSpy.mockRestore();
   });
 
+  it("adds healthNutrients and keeps macros and micronutrients", async () => {
+    const { service } = createService(jest.fn());
+    const result = await service.getTodayDashboard(1, "2026-05-22");
+    expect(result.healthNutrients.sodium).toEqual({ current: 2500, min: null, max: 1500, unit: "mg" });
+    expect(result.macros.protein).toBeDefined();
+    expect(result.micronutrients).toBeDefined();
+  });
+
   it("does not block the dashboard payload on the LLM suggestion", async () => {
     const { service, chat } = createService(
       jest.fn().mockResolvedValue('{"title":"Plan dinner","message":"Choose a low-sodium dinner and drink water with it."}'),
@@ -170,6 +179,23 @@ describe("DashboardService AI suggestion", () => {
       title: "Plan dinner",
       message: "Choose a low-sodium dinner and drink water with it.",
     });
+  });
+
+  it("sends the coach what it needs: age and condition limits, no name or alert bookkeeping", async () => {
+    const { service, chat } = createService(
+      jest.fn().mockResolvedValue('{"title":"Plan dinner","message":"Choose a low-sodium dinner."}'),
+    );
+
+    await service.getTodaySuggestion(1, "2026-05-22");
+
+    const prompt = chat.mock.calls[0][0][1].content;
+    expect(prompt).toContain('"age":34');
+    expect(prompt).toContain('"conditionLimits":["sodium min 500 mg max 1500 mg"]');
+    expect(prompt).toContain('"nutrient":"sodium"');
+    expect(prompt).not.toContain("Alex");
+    expect(prompt).not.toContain("isRead");
+    expect(prompt).not.toContain("score:");
+    expect(prompt).toContain("[1] Lower sodium meals (source: nutrition-guideline)");
   });
 
   it("falls back to rule-based suggestion when the LLM fails", async () => {

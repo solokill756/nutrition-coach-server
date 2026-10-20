@@ -100,6 +100,8 @@ function makeRecipeCtx(overrides: any = {}) {
       totalSaturatedFat: 0,
       totalCholesterol: 0,
       totalPotassium: 0,
+      totalFiber: 0,
+      totalPhosphorus: 0,
     },
     dailyTargetCalories: 2000,
     remaining: {
@@ -112,6 +114,8 @@ function makeRecipeCtx(overrides: any = {}) {
       saturatedFatG: 20,
       cholesterolMg: 300,
       potassiumMgMinRemaining: 0,
+      fiberGMinRemaining: null,
+      phosphorusMg: null,
     },
     ...overrides,
   };
@@ -121,6 +125,37 @@ describe("RecipeBuilderService", () => {
   it("parseRecipeAiResponse throws for invalid json", () => {
     const { service } = createService();
     expect(() => (service as any).parseRecipeAiResponse("xxx")).toThrow(BadGatewayException);
+  });
+
+  it("parseRecipeAiResponse turns the model's written times into whole minutes", () => {
+    const { service } = createService();
+    const { recipe } = (service as any).parseRecipeAiResponse(
+      JSON.stringify({
+        recipe: {
+          name: "Apple porridge",
+          preparationTime: "10 minutes",
+          cookingTime: "1 hour",
+          steps: [
+            { order: 1, instruction: "Dice.", duration: "2 minutes" },
+            { order: 2, instruction: "Simmer.", duration: 5 },
+            { order: 3, instruction: "Serve.", duration: "until thick" },
+          ],
+        },
+      }),
+    );
+    expect(recipe.preparationTime).toBe(10);
+    expect(recipe.cookingTime).toBe(60);
+    expect(recipe.steps.map((s: { duration?: number }) => s.duration)).toEqual([2, 5, undefined]);
+  });
+
+  it("parseRecipeAiResponse defaults unreadable recipe times to 0", () => {
+    const { service } = createService();
+    const { recipe } = (service as any).parseRecipeAiResponse(
+      JSON.stringify({ recipe: { name: "X", preparationTime: "quick", steps: "none" } }),
+    );
+    expect(recipe.preparationTime).toBe(0);
+    expect(recipe.cookingTime).toBe(0);
+    expect(recipe.steps).toEqual([]);
   });
 
   it("safeParse returns object or empty", () => {
@@ -304,6 +339,35 @@ describe("RecipeBuilderService AI safeguards", () => {
     });
   });
 
+  it("passes the client tz offset to the recipe generation context", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(makeRecipeCtx());
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: {
+          name: "Chicken Bowl",
+          servings: 1,
+          ingredients: [{ foodId: 10, amount: 1 }],
+          steps: [{ order: 1, instruction: "cook" }],
+        },
+        recommendation: "",
+      }),
+    );
+
+    await service.generateRecipe({ mealSlot: "lunch", foodIds: [10] } as any, 1, -420);
+
+    expect(userContextService.assembleRecipeGenerationContext).toHaveBeenCalledWith(
+      1,
+      expect.any(String),
+      "lunch",
+      -420,
+    );
+  });
+
   it("recalculates nutrition from food data instead of trusting raw AI placeholder", async () => {
     const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
     const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
@@ -396,5 +460,153 @@ describe("RecipeBuilderService AI safeguards", () => {
       carbs: expect.any(Number),
       fat: expect.any(Number),
     });
+  });
+});
+
+describe("RecipeBuilderService meal targets and prompt", () => {
+  it("judges potassium against the meal's share of the daily target", () => {
+    const { service } = createService();
+    const check = (potassium: number) =>
+      (service as any).validateNutritionAgainstThresholds(
+        { nutritionPerServing: { potassium } },
+        { thresholds: [{ nutrient: "potassium", minAmount: 4700 }] },
+        "dinner",
+      );
+    // Dinner is 30% of the day: about 1,410 mg of 4,700 mg.
+    expect(check(1728)).toEqual([]);
+    expect(check(900)).toEqual([
+      "Potassium is low for this dinner: 900 mg vs about 1,410 mg (30% of your 4,700 mg daily target).",
+    ]);
+  });
+
+  it("tells the AI this meal's targets and sends a lean prompt", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(
+      makeRecipeCtx({
+        todayIntake: { ...makeRecipeCtx().todayIntake, totalCalories: 1200 },
+        remaining: { ...makeRecipeCtx().remaining, calories: 800 },
+      }),
+    );
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: { name: "Chicken Bowl", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "cook" }] },
+        recommendation: "",
+      }),
+    );
+
+    await service.generateRecipe({ mealSlot: "dinner", foodIds: [10] } as any, 1);
+
+    const [system, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    const prompt = `${system.content}\n${user.content}`;
+    // 2000 kcal/day, dinner 30%: 600 kcal, 38 g protein, 75 g carbs, 17 g fat.
+    expect(user.content).toContain(
+      "Aim for ONE serving of this dinner at about 600 kcal, 38 g protein, 75 g carbs, 17 g fat (stay within ±15%).",
+    );
+    // 800 kcal left today must not shrink dinner to 800 × 30% = 240.
+    expect(user.content).toContain("Hard max kcal for ONE serving of this meal slot: ~600 kcal.");
+    expect(user.content).toContain("Protein left today (a ceiling, not a target): ~120 g.");
+    expect(user.content).not.toContain("Max protein (g) per serving");
+    expect(prompt).not.toContain("food_id");
+    expect(prompt).not.toContain("catalogUnitLabel");
+    expect(prompt.match(/catalog reference portions/g)).toHaveLength(1);
+    // JSON blocks are compact, not indented.
+    expect(user.content).not.toMatch(/\n {2}"/);
+  });
+
+  it("sends a compact profile and whole references instead of the full generation context", async () => {
+    const { service, ollamaService, retrievalService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(
+      makeRecipeCtx({
+        profile: { age: 52, sex: "male", weight: 80, goalWeight: 75, height: 172, dietType: "omnivore", allergies: ["peanut"], fitnessLevel: "light" },
+        goalsDetailed: [{ id: 3, goalType: "lose_weight", targetCalories: 1800, startDate: new Date(), endDate: null }],
+        healthDetailed: [{ conditionName: "hypertension" }],
+        thresholds: [{ nutrient: "fiber", minAmount: 25, maxAmount: null, unit: "g" }],
+        conditionRelatedThresholds: [{ nutrient: "sodium", minAmount: null, maxAmount: 1500, unit: "mg" }],
+        recentRecipeLogs: [{ recipeName: "Pho bo", recipeId: 4, loggedAt: new Date(), mealType: "lunch" }],
+      }),
+    );
+    const longTable = Array.from({ length: 30 }, (_, i) => `Nhóm ${i}; Natri: tối đa 1.500 mg/ngày`).join("\n");
+    const ref = {
+      id: "c1", source: "moh.pdf", title: "Hướng dẫn › Tăng huyết áp", content: longTable,
+      domain: "conditions", score: 0.9, page: 7, blockKind: "table", link: "https://moh.example/g.pdf",
+    };
+    retrievalService.retrieve.mockResolvedValueOnce([ref]);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: { name: "Chicken Bowl", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "cook" }] },
+        recommendation: "",
+      }),
+    );
+
+    const result = await service.generateRecipe({ mealSlot: "dinner", foodIds: [10] } as any, 1);
+
+    const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    expect(user.content).toContain(
+      'User (JSON):\n{"age":52,"sex":"male","dietType":"omnivore","allergies":["peanut"],"fitnessLevel":"light",' +
+        '"goals":["lose_weight"],"healthConditions":["hypertension"],' +
+        '"nutrientLimits":["fiber min 25 g","sodium max 1500 mg"],"recentRecipes":["Pho bo"]}',
+    );
+    for (const dropped of ["userId", "todayIntake", "goalsDetailed", "recentHistory", "mealSplits", "goalWeight", "dailyTargetCalories"]) {
+      expect(user.content).not.toContain(`"${dropped}"`);
+    }
+    expect(user.content).toContain(`[1] Hướng dẫn › Tăng huyết áp (page 7; table; source: https://moh.example/g.pdf)\n${longTable}`);
+    expect(result.evidence.map((e: { id: string }) => e.id)).toEqual(["c1"]);
+  });
+
+  it("judges potassium against the user's own share for the meal", () => {
+    const { service } = createService();
+    const warnings = (service as any).validateNutritionAgainstThresholds(
+      { nutritionPerServing: { potassium: 1500 } },
+      { thresholds: [{ nutrient: "potassium", minAmount: 4700 }] },
+      "dinner",
+      0.4,
+    );
+    expect(warnings).toEqual([
+      "Potassium is low for this dinner: 1,500 mg vs about 1,880 mg (40% of your 4,700 mg daily target).",
+    ]);
+  });
+
+  it("warns when a 0% meal falls back to the default share", async () => {
+    const { service, ollamaService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(
+      makeRecipeCtx({ mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 } }),
+    );
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: { name: "Snack", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "eat" }] },
+        recommendation: "",
+      }),
+    );
+    const result = await service.generateRecipe({ mealSlot: "snack", foodIds: [10] } as any, 1);
+    expect(result.generationWarnings).toContain(
+      "You set snacks to 0% of your day; this recipe uses the default 10%.",
+    );
+    const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    expect(user.content).toContain("Aim for ONE serving of this snack at about 200 kcal");
+  });
+
+  it("clampRecipeToRemainingBudgets scales for phosphorus", () => {
+    const { service } = createService();
+    const recipe: any = { ingredients: [{ amount_g: 100, amount: 1 }], nutritionPerServing: { calories: 100, phosphorusMg: 400 } };
+    const warnings: string[] = [];
+    expect((service as any).clampRecipeToRemainingBudgets(recipe, { phosphorusMg: 200 }, warnings)).toBe("adjusted");
+    expect(recipe.ingredients[0].amount_g).toBe(50);
+  });
+
+  it("verifyBudget warns when phosphorus still exceeds remaining", () => {
+    const { service } = createService();
+    expect((service as any).verifyBudget({ nutritionPerServing: { phosphorusMg: 400 } }, { phosphorusMg: 200 }, [])).toBe("warning");
   });
 });

@@ -20,6 +20,8 @@ import {
 import { minutesFrom } from "./ai-minutes";
 import { RetrievalService } from "../retrieval/retrieval.service";
 import { RAG_CONFIDENCE_THRESHOLD } from "../retrieval/rag-confidence";
+import { buildRagReferenceBlock } from "../retrieval/rag-reference-block";
+import { formatThresholdMinMax } from "../nutrition/condition-related-thresholds";
 import { OllamaService } from "../ollama/ollama.service";
 import { FoodService } from "../meal-planning/food.service";
 import {
@@ -49,6 +51,9 @@ import {
 import { RECIPE_PROMPTS } from "./constants/recipe-prompts";
 
 /** TypeORM maps `recipe.source` but not `recipe.source::jsonb` (PascalCase "Source" column). */
+/** Reference budget for recipe generation: a few whole chunks. */
+const RECIPE_REFERENCE_MAX_CHARS = 8000;
+
 export const RECIPE_COMMUNITY_ACCESS_WHERE =
   "(recipe.userId = :userId OR (recipe.source IS NOT NULL AND \"recipe\".\"Source\"::jsonb ->> 'shareWith' = '2'))";
 
@@ -206,9 +211,7 @@ export class RecipeBuilderService {
         `[RAG] All ${contexts.length} chunks scored below ${RAG_CONFIDENCE_THRESHOLD}; LLM prompt Reference section will be empty.`,
       );
     }
-    const contextText = contextsToUse
-      .map((c) => `[${c.domain}] ${c.title}: ${c.content.slice(0, 300)}...`)
-      .join("\n\n");
+    const references = buildRagReferenceBlock(contextsToUse, RECIPE_REFERENCE_MAX_CHARS);
 
     const allowedIds = [...stapleIds].join(", ");
     // The same per-meal target the result is scored against, so the model
@@ -269,17 +272,16 @@ export class RecipeBuilderService {
       budgetLines.push(`Max phosphorus (mg) per serving: ~${Math.round(r.phosphorusMg)} mg remaining today.`);
     }
 
-    const systemPrompt = RECIPE_PROMPTS.buildSystemPrompt(allowedIds, contextsToUse);
+    const systemPrompt = RECIPE_PROMPTS.buildSystemPrompt(allowedIds, references.used.length > 0);
 
     const userPrompt = RECIPE_PROMPTS.buildUserPrompt(
       input.mealSlot,
       dateKey,
-      recipeCtx,
+      this.toPromptProfile(recipeCtx),
       staplePayload,
       budgetLines,
       constraints,
-      contextText,
-      contextsToUse,
+      references.text,
     );
 
     let recipeJson = "";
@@ -354,7 +356,7 @@ export class RecipeBuilderService {
       score,
       nutritionTarget,
       scoreWarnings: recipeScoreWarnings,
-      evidence: contextsToUse.map((c) => ({
+      evidence: references.used.map((c) => ({
         id: c.id,
         title: c.title,
         link: c.link,
@@ -366,6 +368,28 @@ export class RecipeBuilderService {
         chunkIndex: c.chunkIndex,
         chunkTotal: c.chunkTotal,
       })),
+    };
+  }
+
+  /**
+   * The user as the recipe model sees them. Intake, remaining budgets, meal
+   * split and calorie target are left out: the budget lines already turn them
+   * into per-meal numbers, and sending both only repeats them.
+   */
+  private toPromptProfile(ctx: RecipeGenerationContext) {
+    const limits = [...ctx.thresholds, ...(ctx.conditionRelatedThresholds ?? [])]
+      .map(formatThresholdMinMax)
+      .filter(Boolean);
+    return {
+      age: ctx.profile.age ?? null,
+      sex: ctx.profile.sex ?? null,
+      dietType: ctx.profile.dietType ?? null,
+      allergies: ctx.profile.allergies ?? [],
+      fitnessLevel: ctx.profile.fitnessLevel ?? null,
+      goals: ctx.goalsDetailed.map((g) => g.goalType),
+      healthConditions: ctx.healthDetailed.map((h) => h.conditionName),
+      nutrientLimits: [...new Set(limits)],
+      recentRecipes: ctx.recentRecipeLogs.map((r) => r.recipeName),
     };
   }
 

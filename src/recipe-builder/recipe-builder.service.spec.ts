@@ -517,6 +517,50 @@ describe("RecipeBuilderService meal targets and prompt", () => {
     expect(user.content).not.toMatch(/\n {2}"/);
   });
 
+  it("sends a compact profile and whole references instead of the full generation context", async () => {
+    const { service, ollamaService, retrievalService, userContextService, stapleFoodService, foodRepo } = createService();
+    const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+    stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
+    foodRepo.find.mockResolvedValue([stapleFood]);
+    foodRepo.findOne.mockResolvedValue(stapleFood);
+    userContextService.assembleRecipeGenerationContext.mockResolvedValue(
+      makeRecipeCtx({
+        profile: { age: 52, sex: "male", weight: 80, goalWeight: 75, height: 172, dietType: "omnivore", allergies: ["peanut"], fitnessLevel: "light" },
+        goalsDetailed: [{ id: 3, goalType: "lose_weight", targetCalories: 1800, startDate: new Date(), endDate: null }],
+        healthDetailed: [{ conditionName: "hypertension" }],
+        thresholds: [{ nutrient: "fiber", minAmount: 25, maxAmount: null, unit: "g" }],
+        conditionRelatedThresholds: [{ nutrient: "sodium", minAmount: null, maxAmount: 1500, unit: "mg" }],
+        recentRecipeLogs: [{ recipeName: "Pho bo", recipeId: 4, loggedAt: new Date(), mealType: "lunch" }],
+      }),
+    );
+    const longTable = Array.from({ length: 30 }, (_, i) => `Nhóm ${i}; Natri: tối đa 1.500 mg/ngày`).join("\n");
+    const ref = {
+      id: "c1", source: "moh.pdf", title: "Hướng dẫn › Tăng huyết áp", content: longTable,
+      domain: "conditions", score: 0.9, page: 7, blockKind: "table", link: "https://moh.example/g.pdf",
+    };
+    retrievalService.retrieve.mockResolvedValueOnce([ref]);
+    ollamaService.chat.mockResolvedValueOnce(
+      JSON.stringify({
+        recipe: { name: "Chicken Bowl", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "cook" }] },
+        recommendation: "",
+      }),
+    );
+
+    const result = await service.generateRecipe({ mealSlot: "dinner", foodIds: [10] } as any, 1);
+
+    const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    expect(user.content).toContain(
+      'User (JSON):\n{"age":52,"sex":"male","dietType":"omnivore","allergies":["peanut"],"fitnessLevel":"light",' +
+        '"goals":["lose_weight"],"healthConditions":["hypertension"],' +
+        '"nutrientLimits":["fiber min 25 g","sodium max 1500 mg"],"recentRecipes":["Pho bo"]}',
+    );
+    for (const dropped of ["userId", "todayIntake", "goalsDetailed", "recentHistory", "mealSplits", "goalWeight", "dailyTargetCalories"]) {
+      expect(user.content).not.toContain(`"${dropped}"`);
+    }
+    expect(user.content).toContain(`[1] Hướng dẫn › Tăng huyết áp (page 7; table; source: https://moh.example/g.pdf)\n${longTable}`);
+    expect(result.evidence.map((e: { id: string }) => e.id)).toEqual(["c1"]);
+  });
+
   it("judges potassium against the user's own share for the meal", () => {
     const { service } = createService();
     const warnings = (service as any).validateNutritionAgainstThresholds(

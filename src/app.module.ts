@@ -24,6 +24,8 @@ import { HealthController } from "./health.controller";
 import { AdminModule } from "./admin/admin.module";
 import { UserNotificationsModule } from "./user-notifications/user-notifications.module";
 
+import { RagIngestModule } from "./rag-ingest/rag-ingest.module";
+
 const envFilePath = path.join(__dirname, "..", ".env");
 dotenv.config({ path: envFilePath, override: true });
 
@@ -66,6 +68,7 @@ dotenv.config({ path: envFilePath, override: true });
     ProgressModule,
     UserNotificationsModule,
     AdminModule,
+    RagIngestModule,
   ],
   controllers: [HealthController],
   providers: [

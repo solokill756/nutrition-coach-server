@@ -281,7 +281,7 @@ describe("FoodSemanticSearchService edge cases", () => {
         if (k === "POSTGRES_VECTOR_DIM") return "768";
       }),
     } as any;
-    const vector = { getQueryEmbedding: jest.fn().mockResolvedValue([0.1]) } as any;
+    const vector = { getFoodQueryEmbedding: jest.fn().mockResolvedValue([0.1]) } as any;
     const svc = new FoodSemanticSearchService(ds, config, vector);
 
     const result = await svc.searchIngredient("unknown_xyz_ingredient", 5);

@@ -5,11 +5,11 @@ import { VectorService } from "./vector.service";
 import { PostgresRagService } from "./postgres-rag.service";
 import { OllamaService } from "../ollama/ollama.service";
 
-function config(): ConfigService {
+function config(extra: Record<string, string> = {}): ConfigService {
   return {
     get: jest.fn((key: string) => {
       if (key === "RETRIEVAL_QUERY_EXPANSION_ENABLED") return "false";
-      return undefined;
+      return extra[key];
     }),
   } as unknown as ConfigService;
 }
@@ -26,10 +26,10 @@ function vectorService(): VectorService {
   } as unknown as VectorService;
 }
 
-function createService(): RetrievalService {
+function createService(extraConfig: Record<string, string> = {}, vector: VectorService = vectorService()): RetrievalService {
   const service = new RetrievalService(
-    config(),
-    vectorService(),
+    config(extraConfig),
+    vector,
     {} as PostgresRagService,
     { chat: jest.fn() } as unknown as OllamaService,
   );
@@ -87,15 +87,139 @@ function createService(): RetrievalService {
     },
   ];
 
-  (service as any).docs = docs;
+  (service as any).index = (service as any).buildIndex(docs);
   (service as any).isIndexReady = true;
   (service as any).isVectorReady = false;
   (service as any).hybridMode = "bm25-only";
-  (service as any).buildDomainDocIdMap();
-  (service as any).buildIndices();
 
   return service;
 }
+
+function rebuildConfig(): ConfigService {
+  return {
+    get: jest.fn((key: string) => {
+      if (key === "RETRIEVAL_QUERY_EXPANSION_ENABLED") return "false";
+      if (key === "USE_POSTGRES_STORAGE") return "true";
+      return undefined;
+    }),
+  } as unknown as ConfigService;
+}
+
+function chunk(id: string, content: string) {
+  return { id, source: "s", title: `Title ${id}`, content, metadata: { domain: "guidelines" } };
+}
+
+function rebuildService(loadCorpus: jest.Mock): RetrievalService {
+  const postgres = {
+    isEnabled: jest.fn(() => true),
+    ensureSchema: jest.fn().mockResolvedValue(undefined),
+    loadCorpus,
+  } as unknown as PostgresRagService;
+  return new RetrievalService(
+    rebuildConfig(),
+    vectorService(),
+    postgres,
+    { chat: jest.fn() } as unknown as OllamaService,
+  );
+}
+
+describe("RetrievalService hot rebuild", () => {
+  beforeEach(() => {
+    jest.spyOn(console, "log").mockImplementation(() => undefined);
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    jest.spyOn(console, "error").mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  it("ignores POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=true: no boot re-embedding, a log line says the ingest pipeline owns RAG embeddings", async () => {
+    const vector = vectorService();
+    (vector as any).isServiceReady = jest.fn(() => true);
+    (vector as any).ensureEmbeddingsForDocuments = jest.fn();
+    const postgres = {
+      isEnabled: jest.fn(() => true),
+      ensureSchema: jest.fn().mockResolvedValue(undefined),
+      loadCorpus: jest.fn().mockResolvedValue({ docs: [chunk("a", "salt intake")] }),
+    } as unknown as PostgresRagService;
+    const cfg = {
+      get: jest.fn((key: string) =>
+        ({ USE_POSTGRES_STORAGE: "true", POSTGRES_SYNC_EMBEDDINGS_ON_BOOT: "true", RETRIEVAL_QUERY_EXPANSION_ENABLED: "false" } as Record<string, string>)[key],
+      ),
+    } as unknown as ConfigService;
+    const service = new RetrievalService(cfg, vector, postgres, { chat: jest.fn() } as unknown as OllamaService);
+    await service.onModuleInit();
+    expect((vector as any).ensureEmbeddingsForDocuments).not.toHaveBeenCalled();
+    const logged = [...(console.log as jest.Mock).mock.calls, ...(console.warn as jest.Mock).mock.calls].map((c) => String(c[0]));
+    expect(logged.some((l) => /POSTGRES_SYNC_EMBEDDINGS_ON_BOOT.*ignored.*ingest pipeline owns RAG embeddings/.test(l))).toBe(true);
+    expect((service as any).isVectorReady).toBe(true);
+  });
+
+  it("starts with an empty corpus without throwing and retrieve returns []", async () => {
+    const service = rebuildService(jest.fn().mockResolvedValue({ docs: [] }));
+    await expect(service.onModuleInit()).resolves.toBeUndefined();
+    await expect(service.retrieve("salt", 5, {}, "bm25-only")).resolves.toEqual([]);
+  });
+
+  it("serves results from the old index while rebuildIndex is running", async () => {
+    let resolveSecond!: (v: unknown) => void;
+    const loadCorpus = jest
+      .fn()
+      .mockResolvedValueOnce({ docs: [chunk("old", "salt intake guideline")] })
+      .mockReturnValueOnce(new Promise((r) => (resolveSecond = r)));
+    const service = rebuildService(loadCorpus);
+    await service.rebuildIndex();
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["old"]);
+
+    const pending = service.rebuildIndex();
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["old"]);
+
+    resolveSecond({ docs: [chunk("new", "salt reduction advice")] });
+    await pending;
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["new"]);
+  });
+
+  it("keeps the old index when a rebuild fails", async () => {
+    const loadCorpus = jest
+      .fn()
+      .mockResolvedValueOnce({ docs: [chunk("old", "salt intake guideline")] })
+      .mockRejectedValueOnce(new Error("db down"));
+    const service = rebuildService(loadCorpus);
+    await service.rebuildIndex();
+    await expect(service.rebuildIndex()).resolves.toBeUndefined();
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["old"]);
+  });
+
+  it("runs one more rebuild after a concurrent request instead of two in parallel", async () => {
+    let resolveFirst!: (v: unknown) => void;
+    const loadCorpus = jest
+      .fn()
+      .mockReturnValueOnce(new Promise((r) => (resolveFirst = r)))
+      .mockResolvedValueOnce({ docs: [chunk("second", "salt second")] });
+    const service = rebuildService(loadCorpus);
+    const a = service.rebuildIndex();
+    const b = service.rebuildIndex();
+    await new Promise((r) => setImmediate(r));
+    expect(loadCorpus).toHaveBeenCalledTimes(1);
+    resolveFirst({ docs: [chunk("first", "salt first")] });
+    await Promise.all([a, b]);
+    expect(loadCorpus).toHaveBeenCalledTimes(2);
+    expect((await service.retrieve("salt", 5, {}, "bm25-only")).map((r) => r.id)).toEqual(["second"]);
+  });
+
+  it("scheduleRebuild debounces multiple calls into one rebuild", async () => {
+    jest.useFakeTimers();
+    const loadCorpus = jest.fn().mockResolvedValue({ docs: [chunk("a", "salt")] });
+    const service = rebuildService(loadCorpus);
+    service.scheduleRebuild();
+    service.scheduleRebuild();
+    service.scheduleRebuild();
+    await jest.advanceTimersByTimeAsync(2000);
+    expect(loadCorpus).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("RetrievalService entity filters", () => {
   beforeEach(() => {
@@ -211,4 +335,99 @@ describe("RetrievalService entity filters", () => {
     expect(results.some((r) => r.domain === "conditions")).toBe(true);
   });
 
+});
+
+describe("RetrievalService query-embedding timeout", () => {
+  beforeEach(() => {
+    jest.spyOn(console, "log").mockImplementation(() => undefined);
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    jest.spyOn(console, "error").mockImplementation(() => undefined);
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  /** Hybrid service whose query embedding never resolves (Ollama busy with an ingest job). */
+  function hungHybridService(extraConfig: Record<string, string> = {}) {
+    const signals: AbortSignal[] = [];
+    const vector = vectorService();
+    const getQueryEmbedding = jest.fn((_q: string, signal?: AbortSignal) => {
+      if (signal) signals.push(signal);
+      return new Promise<number[]>(() => undefined);
+    });
+    (vector as any).getQueryEmbedding = getQueryEmbedding;
+    const service = createService({ RETRIEVAL_CROSS_ENCODER_LITE_ENABLED: "false", ...extraConfig }, vector);
+    (service as any).isVectorReady = true;
+    (service as any).hybridMode = "hybrid";
+    return { service, getQueryEmbedding, signals, vector };
+  }
+
+  async function retrieveTimed(service: RetrievalService, question: string) {
+    let settled = false;
+    const p = service.retrieve(question, 5, { intent: "condition_specific" }).then((r) => {
+      settled = true;
+      return r;
+    });
+    return { p, isSettled: () => settled };
+  }
+
+  it("returns BM25 results within the default 3000 ms when the query embedding hangs", async () => {
+    const { service, getQueryEmbedding, signals, vector } = hungHybridService();
+    const run = await retrieveTimed(service, "cholesterol LDL triglyceride");
+    await jest.advanceTimersByTimeAsync(2999);
+    expect(run.isSettled()).toBe(false);
+    await jest.advanceTimersByTimeAsync(1);
+    expect(run.isSettled()).toBe(true);
+    const results = await run.p;
+    expect(results.map((r) => r.id)).toContain("condition_lipids");
+    // One timeout per request: the re-rank step does not wait for a second hung embedding.
+    expect(getQueryEmbedding).toHaveBeenCalledTimes(1);
+    expect(signals[0].aborted).toBe(true);
+    expect(vector.vectorSearch).not.toHaveBeenCalled();
+  });
+
+  it("honours RAG_QUERY_EMBED_TIMEOUT_MS", async () => {
+    const { service } = hungHybridService({ RAG_QUERY_EMBED_TIMEOUT_MS: "500" });
+    const run = await retrieveTimed(service, "cholesterol LDL triglyceride");
+    await jest.advanceTimersByTimeAsync(500);
+    expect(run.isSettled()).toBe(true);
+    expect((await run.p).map((r) => r.id)).toContain("condition_lipids");
+  });
+
+  it("re-ranks without semantic scores instead of returning [] when only the re-rank embedding fails", async () => {
+    const vector = vectorService();
+    (vector as any).vectorSearchAll = jest.fn(async () => [{ docId: "condition_lipids", score: 0.9 }]);
+    (vector as any).getQueryEmbedding = jest
+      .fn()
+      .mockResolvedValueOnce([1, 0])
+      .mockRejectedValueOnce(new Error("ollama busy"));
+    const service = createService({ RETRIEVAL_CROSS_ENCODER_LITE_ENABLED: "false" }, vector);
+    (service as any).isVectorReady = true;
+    (service as any).hybridMode = "hybrid";
+    const results = await service.retrieve("cholesterol LDL triglyceride", 5, { intent: "condition_specific" });
+    expect(results.map((r) => r.id)).toContain("condition_lipids");
+  });
+});
+
+describe("RetrievalService result format", () => {
+  it("returns the whole chunk with its page and block kind", () => {
+    const service = createService();
+    const content = "Nhóm: Nam 19–30 tuổi; Năng lượng: 2.500 kcal/ngày. ".repeat(40);
+    const result = (service as any).formatRetrievalResult(
+      {
+        id: "c1",
+        source: "s",
+        title: "Bảng 5",
+        content,
+        metadata: { domain: "guidelines", page_from: 12, block_kind: "table" },
+      },
+      0.8,
+    );
+    expect(result.content).toBe(content);
+    expect(result.page).toBe(12);
+    expect(result.blockKind).toBe("table");
+  });
 });

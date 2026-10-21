@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Param, ParseIntPipe, Patch, Post, Query, UseFilters, UseGuards } from "@nestjs/common";
+import { ApiBody } from "@nestjs/swagger";
 import { AdminAuthExceptionFilter } from "../auth/admin-auth-exception.filter";
 import { AdminJwtAuthGuard } from "../auth/guards/admin-jwt-auth.guard";
 import { AdminRoleGuard } from "../auth/guards/admin-role.guard";
@@ -32,6 +33,7 @@ export class AdminConditionRulesController {
   }
 
   @Patch(":conditionKey/:ruleId/status")
+  @ApiBody({ schema: { type: "object", required: ["isActive"], properties: { isActive: { type: "boolean" } } } })
   updateStatus(
     @Param("conditionKey") conditionKey: string,
     @Param("ruleId", ParseIntPipe) ruleId: number,

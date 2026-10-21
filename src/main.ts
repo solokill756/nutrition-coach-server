@@ -8,6 +8,7 @@ import { join } from "path";
 import { AppModule } from "./app.module";
 import { buildCorsOptions } from "./common/http/cors-options";
 import { LoggingInterceptor } from "./common/interceptors/logging.interceptor";
+import { isSwaggerEnabled, setupSwagger, SWAGGER_PATH } from "./common/swagger/swagger";
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
@@ -27,9 +28,13 @@ async function bootstrap() {
     })
   );
 
+  const swaggerEnabled = isSwaggerEnabled(process.env.SWAGGER_ENABLED, process.env.NODE_ENV);
+  if (swaggerEnabled) setupSwagger(app);
+
   const port = Number(process.env.PORT || 3001);
   await app.listen(port);
   console.log(`Nutrition coach server running on http://localhost:${port}`);
+  if (swaggerEnabled) console.log(`Swagger UI: http://localhost:${port}/${SWAGGER_PATH}`);
 }
 
 bootstrap().catch((error) => {

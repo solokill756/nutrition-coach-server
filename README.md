@@ -45,6 +45,13 @@
 
 ## 5) API
 
+### Swagger
+
+- UI: http://localhost:3001/docs — raw spec: http://localhost:3001/docs-json
+- Log in with POST /auth/login (or /admin/auth/login), copy `accessToken` into **Authorize**; it is kept across reloads.
+- On unless `NODE_ENV=production`; the Docker image sets that, so add `SWAGGER_ENABLED=true` to `.env` to see it there (or `false` to hide it anywhere).
+- Body and query schemas come from the DTOs' class-validator decorators, so no `@ApiProperty` is needed. Add one only to override what is generated.
+
 ### Health
 
 - GET /health

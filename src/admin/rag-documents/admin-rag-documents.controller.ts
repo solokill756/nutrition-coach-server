@@ -21,6 +21,7 @@ import {
   UseInterceptors,
 } from "@nestjs/common";
 import { FileInterceptor } from "@nestjs/platform-express";
+import { ApiBody, ApiConsumes } from "@nestjs/swagger";
 import { Response } from "express";
 import { AdminAuthExceptionFilter } from "../auth/admin-auth-exception.filter";
 import { AdminJwtAuthGuard, AdminJwtUser } from "../auth/guards/admin-jwt-auth.guard";
@@ -63,6 +64,8 @@ export class AdminRagDocumentsController {
   @Post("documents/upload")
   @UseFilters(RagUploadTooLargeFilter)
   @UseInterceptors(FileInterceptor("file", RAG_UPLOAD_OPTIONS))
+  @ApiConsumes("multipart/form-data")
+  @ApiBody({ schema: { type: "object", required: ["file"], properties: { file: { type: "string", format: "binary" } } } })
   async upload(@Req() req: AdminRequest, @UploadedFile() file: UploadedPdf | undefined) {
     return this.service.uploadPdf(file, req.user.userId);
   }

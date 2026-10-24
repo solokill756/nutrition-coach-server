@@ -135,10 +135,11 @@ describe("RetrievalService hot rebuild", () => {
     jest.restoreAllMocks();
   });
 
-  it("ignores POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=true: no boot re-embedding, a log line says the ingest pipeline owns RAG embeddings", async () => {
+  it("boots with pgvector ready without re-embedding the corpus", async () => {
     const vector = vectorService();
     (vector as any).isServiceReady = jest.fn(() => true);
-    (vector as any).ensureEmbeddingsForDocuments = jest.fn();
+    (vector as any).embedDocument = jest.fn();
+    (vector as any).embedDocuments = jest.fn();
     const postgres = {
       isEnabled: jest.fn(() => true),
       ensureSchema: jest.fn().mockResolvedValue(undefined),
@@ -146,14 +147,13 @@ describe("RetrievalService hot rebuild", () => {
     } as unknown as PostgresRagService;
     const cfg = {
       get: jest.fn((key: string) =>
-        ({ USE_POSTGRES_STORAGE: "true", POSTGRES_SYNC_EMBEDDINGS_ON_BOOT: "true", RETRIEVAL_QUERY_EXPANSION_ENABLED: "false" } as Record<string, string>)[key],
+        ({ USE_POSTGRES_STORAGE: "true", RETRIEVAL_QUERY_EXPANSION_ENABLED: "false" } as Record<string, string>)[key],
       ),
     } as unknown as ConfigService;
     const service = new RetrievalService(cfg, vector, postgres, { chat: jest.fn() } as unknown as OllamaService);
     await service.onModuleInit();
-    expect((vector as any).ensureEmbeddingsForDocuments).not.toHaveBeenCalled();
-    const logged = [...(console.log as jest.Mock).mock.calls, ...(console.warn as jest.Mock).mock.calls].map((c) => String(c[0]));
-    expect(logged.some((l) => /POSTGRES_SYNC_EMBEDDINGS_ON_BOOT.*ignored.*ingest pipeline owns RAG embeddings/.test(l))).toBe(true);
+    expect((vector as any).embedDocument).not.toHaveBeenCalled();
+    expect((vector as any).embedDocuments).not.toHaveBeenCalled();
     expect((service as any).isVectorReady).toBe(true);
   });
 

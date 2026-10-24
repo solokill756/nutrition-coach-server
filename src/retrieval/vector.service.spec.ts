@@ -17,8 +17,6 @@ function createPostgres(enabled = false) {
   return {
     isEnabled: jest.fn(() => enabled),
     ensureSchema: jest.fn().mockResolvedValue(undefined),
-    getChunkEmbeddingHashes: jest.fn().mockResolvedValue(new Map()),
-    syncChunkEmbeddings: jest.fn().mockResolvedValue({ added: 0, updated: 0, removed: 0, skipped: 0, failed: 0 }),
     vectorSearchByDocIds: jest.fn().mockResolvedValue([{ docId: "a", score: 0.8 }]),
     vectorSearchAll: jest.fn().mockResolvedValue([{ docId: "a", score: 0.8 }]),
   } as any;

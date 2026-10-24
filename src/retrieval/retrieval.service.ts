@@ -73,16 +73,7 @@ export class RetrievalService implements OnModuleInit {
       console.log(`[RETRIEVAL] 📂 Indexed domains: ${this.getIndexedDomains().join(", ") || "(none)"}`);
       this.isIndexReady = true;
 
-      // No boot embedding sync for RAG: it re-embedded chunks with a different text and deleted
-      // the embeddings of inactive chunks. The ingest pipeline (and admin edits) own rag_embeddings.
-      const syncEmbeddingsOnBoot = String(
-        this.config.get<string>("POSTGRES_SYNC_EMBEDDINGS_ON_BOOT") || "false"
-      ).toLowerCase() === "true";
-      if (syncEmbeddingsOnBoot) {
-        console.warn(
-          "[RETRIEVAL]  POSTGRES_SYNC_EMBEDDINGS_ON_BOOT=true is ignored: the ingest pipeline owns RAG embeddings"
-        );
-      }
+      // No boot embedding sync for RAG: the ingest pipeline (and admin edits) own rag_embeddings.
       this.isVectorReady = this.vectorService.isServiceReady();
 
       if (!this.isVectorReady && this.hybridMode !== "bm25-only") {

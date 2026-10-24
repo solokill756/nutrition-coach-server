@@ -25,9 +25,11 @@ describe("UserContextService", () => {
     ruleRepo.find.mockResolvedValue([]);
     const mockApplier: any = { applyRules: jest.fn(() => ({ thresholds: [], changedNutrients: [], warnings: [], rebalance: { status: "not_requested", adjustedNutrients: [] } })) };
     const mockUnits: any = { normalizeNutrient: (x: string) => x.trim().replace(/[_\s-]/g, "").toLowerCase() };
+    const weightRepo: any = mkRepo();
+    weightRepo.findOne.mockResolvedValue(null);
     const mockConfig: any = { get: jest.fn() };
-    const service = new UserContextService(goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, mockApplier, mockUnits, mockConfig);
-    return { service, goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, mockApplier };
+    const service = new UserContextService(goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, weightRepo, mockApplier, mockUnits, mockConfig);
+    return { service, goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, weightRepo, mockApplier };
   }
 
   it("assembleRecipeGenerationContext validates dateKey", async () => {
@@ -193,5 +195,35 @@ describe("UserContextService", () => {
     expect(out.remaining.phosphorusMg).toBe(450);
     const { start, end } = calendarDayBounds("2026-05-31", -420);
     expect(logRepo.find).toHaveBeenCalledWith({ where: { userId: 1, delFlag: false, loggedAt: Between(start, end) } });
+  });
+
+  const userRow = { id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" };
+
+  it("orders goals by startDate then id", async () => {
+    const { service, userRepo, goalRepo } = setup();
+    userRepo.findOne.mockResolvedValueOnce(userRow);
+    await service.assembleContext(1);
+    expect(goalRepo.find).toHaveBeenCalledWith(
+      expect.objectContaining({ order: { startDate: "DESC", id: "DESC" } }),
+    );
+  });
+
+  it("weight comes from the latest weight log", async () => {
+    const { service, userRepo, weightRepo } = setup();
+    userRepo.findOne.mockResolvedValueOnce(userRow);
+    weightRepo.findOne.mockResolvedValueOnce({ weightKg: "72.5" });
+    const out = await service.assembleContext(1);
+    expect(out.profile.weight).toBe(72.5);
+    expect(weightRepo.findOne).toHaveBeenCalledWith({
+      where: { userId: 1, delFlag: false },
+      order: { recordedOn: "DESC", recordedAt: "DESC" },
+    });
+  });
+
+  it("weight falls back to user.weight", async () => {
+    const { service, userRepo } = setup();
+    userRepo.findOne.mockResolvedValueOnce(userRow);
+    const out = await service.assembleContext(1);
+    expect(out.profile.weight).toBe(70);
   });
 });

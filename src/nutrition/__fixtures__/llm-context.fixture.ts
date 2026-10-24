@@ -1,0 +1,60 @@
+import type { RecipeGenerationContext } from "../user-context.service";
+
+export function sampleRecipeContext(overrides: Partial<RecipeGenerationContext> = {}): RecipeGenerationContext {
+  return {
+    userId: 1,
+    dateKey: "2026-10-24",
+    mealSlot: "lunch",
+    recentLogHistoryDays: 3,
+    profile: {
+      age: 34,
+      sex: "female",
+      weight: 72.5,
+      goalWeight: 65,
+      height: 165,
+      dietType: "balanced",
+      allergies: ["Eggs"],
+      fitnessLevel: "moderate",
+    },
+    goalsDetailed: [
+      { id: 2, goalType: "lose_weight", targetCalories: 1800, startDate: new Date("2026-10-01"), endDate: null },
+      { id: 1, goalType: "low_sodium", targetCalories: null, startDate: new Date("2026-09-01"), endDate: null },
+    ],
+    healthDetailed: [{ conditionName: "hypertension" }],
+    thresholds: [{ nutrient: "sodium", maxAmount: 2000, minAmount: null, unit: "mg" }],
+    conditionRelatedThresholds: [
+      { nutrient: "sodium", maxAmount: 2000, minAmount: null, unit: "mg" },
+      { nutrient: "potassium", maxAmount: null, minAmount: 3500, unit: "mg" },
+    ],
+    recentHistory: [],
+    recentRecipeLogs: [],
+    todayIntake: {
+      totalCalories: 900,
+      totalProtein: 40,
+      totalCarbs: 100,
+      totalFat: 30,
+      totalSodium: 850.25,
+      totalSugar: 20,
+      totalSaturatedFat: 8,
+      totalCholesterol: 120,
+      totalPotassium: 1500,
+      totalFiber: 10,
+      totalPhosphorus: 300,
+    },
+    dailyTargetCalories: 1800,
+    remaining: {
+      calories: 900,
+      sodiumMg: 1149.75,
+      carbsG: null,
+      proteinG: null,
+      fatG: null,
+      sugarG: null,
+      saturatedFatG: null,
+      cholesterolMg: null,
+      potassiumMgMinRemaining: null,
+      fiberGMinRemaining: null,
+      phosphorusMg: null,
+    },
+    ...overrides,
+  };
+}

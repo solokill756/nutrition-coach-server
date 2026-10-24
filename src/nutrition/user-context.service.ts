@@ -12,6 +12,7 @@ import { AppUserEntity } from "../auth/entities/app-user.entity";
 import { FoodNutritionEntity } from "../meal-planning/entities/food-nutrition.entity";
 import { RecipeEntity } from "../recipe-builder/entities/recipe.entity";
 import { ConditionNutrientRuleEntity } from "./entities/condition-nutrient-rule.entity";
+import { WeightEntity } from "../weight/entities/weight.entity";
 import { ConditionNutrientRuleApplierService } from "./condition-nutrient-rule-applier.service";
 import { ConditionNutrientUnitService } from "./condition-nutrient-unit.service";
 import { buildConditionRelatedThresholds } from "./condition-related-thresholds";
@@ -158,6 +159,8 @@ export class UserContextService {
     private readonly recipeRepo: Repository<RecipeEntity>,
     @InjectRepository(ConditionNutrientRuleEntity)
     private readonly ruleRepo: Repository<ConditionNutrientRuleEntity>,
+    @InjectRepository(WeightEntity)
+    private readonly weightRepo: Repository<WeightEntity>,
     private readonly applier: ConditionNutrientRuleApplierService,
     private readonly units: ConditionNutrientUnitService,
     config: ConfigService,
@@ -230,11 +233,15 @@ export class UserContextService {
   }
 
   private async fetchStaticContext(userId: number): Promise<UserStaticContext> {
-    const [user, goals, health, thresholds] = await Promise.all([
+    const [user, goals, health, thresholds, latestWeight] = await Promise.all([
       this.userRepo.findOne({ where: { id: userId } }),
-      this.goalRepo.find({ where: { userId, isActive: true }, order: { id: "DESC" } }),
+      this.goalRepo.find({ where: { userId, isActive: true }, order: { startDate: "DESC", id: "DESC" } }),
       this.healthRepo.find({ where: { userId, isActive: true } }),
       this.thresholdRepo.find({ where: { userId, isActive: true } }),
+      this.weightRepo.findOne({
+        where: { userId, delFlag: false },
+        order: { recordedOn: "DESC", recordedAt: "DESC" },
+      }),
     ]);
 
     if (!user) throw new Error(`User ${userId} not found`);
@@ -272,7 +279,7 @@ export class UserContextService {
       profile: {
         age: user.age,
         sex: user.sex,
-        weight: user.weight,
+        weight: latestWeight != null && Number.isFinite(Number(latestWeight.weightKg)) ? Number(latestWeight.weightKg) : user.weight,
         goalWeight: user.goalWeight,
         height: user.height,
         dietType: user.dietType,

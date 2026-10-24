@@ -238,6 +238,29 @@ export class RagStoreService {
     return rows[0] ? toDocument(rows[0]) : null;
   }
 
+  /**
+   * Another document whose chunks have exactly these source content hashes, i.e. the same extracted
+   * content (a URL that redirects to a page already added, or the same PDF saved again).
+   */
+  async findDocumentWithSameContent(documentId: string, hashes: string[]): Promise<RagDocumentRow | null> {
+    if (hashes.length === 0) return null;
+    const distinct = [...new Set(hashes)];
+    const rows = rowsOf(
+      await this.dataSource.query(
+        `SELECT d.* FROM ${this.documents} d
+           JOIN ${this.chunks} c ON c.doc_id = d.id AND c.chunk_key IS NOT NULL
+          WHERE d.id <> $1
+          GROUP BY d.id
+         HAVING count(*) = $3
+            AND bool_and(c.source_content_hash = ANY($2::text[]))
+            AND count(DISTINCT c.source_content_hash) = $4
+          LIMIT 1`,
+        [documentId, distinct, hashes.length, distinct.length]
+      )
+    );
+    return rows[0] ? toDocument(rows[0]) : null;
+  }
+
   async getDocument(id: string): Promise<RagDocumentRow | null> {
     const rows = rowsOf(await this.dataSource.query(`SELECT * FROM ${this.documents} WHERE id = $1`, [id]));
     return rows[0] ? toDocument(rows[0]) : null;

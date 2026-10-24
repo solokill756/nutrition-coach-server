@@ -17,6 +17,8 @@ import { countWords, documentLanguage } from "./text-normalize";
 const MIN_TEXT_WORDS = 50;
 const DEFAULT_MAX_PDF_PAGES = 300;
 const MAX_MESSAGE_CHARS = 200;
+/** Keeps the duplicate failure message within MAX_MESSAGE_CHARS. */
+const MAX_DUPLICATE_TITLE_CHARS = 120;
 
 /** An error whose message is already safe and readable for the admin UI. */
 class PipelineError extends Error {}
@@ -145,6 +147,15 @@ export class RagIngestPipeline {
     await report("chunking", 45);
     const drafts = chunkDocument(extracted, imageTexts);
     if (drafts.length === 0) throw new PipelineError("No content to index");
+    // Duplicate check by content, not URL: Docling follows redirects, so the final URL is unknown here.
+    const duplicate = await this.store.findDocumentWithSameContent(
+      job.documentId,
+      drafts.map((d) => d.sourceContentHash)
+    );
+    if (duplicate) {
+      const title = duplicate.title.length > MAX_DUPLICATE_TITLE_CHARS ? `${duplicate.title.slice(0, MAX_DUPLICATE_TITLE_CHARS)}…` : duplicate.title;
+      throw new PipelineError(`Same content as the existing document "${title}"; delete this duplicate`);
+    }
     const draftKeys = drafts.map((d) => ({ chunkKey: d.chunkKey, sourceContentHash: d.sourceContentHash }));
     const existing = await this.store.getExistingChunkStates(job.documentId);
     const plan = planChunkMerge(existing, draftKeys);

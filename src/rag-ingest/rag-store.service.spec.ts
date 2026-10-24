@@ -65,6 +65,23 @@ describe("RagStoreService", () => {
     expect(sql).toContain("jsonb_set(metadata, '{domain}'");
   });
 
+  it("findDocumentWithSameContent looks for another document with exactly these chunk hashes", async () => {
+    const hit = makeStore(() => [], () => [{ ...docRow, id: "doc-2", title: "Healthy Living with Diabetes", status: "ready" }]);
+    const found = await hit.store.findDocumentWithSameContent("doc-1", ["h1", "h2", "h1"]);
+    expect(found).toMatchObject({ id: "doc-2", title: "Healthy Living with Diabetes" });
+    const { sql, params } = hit.plainCalls[0];
+    expect(sql).toMatch(/d\.id <> \$1/);
+    expect(sql).toMatch(/HAVING count\(\*\) = \$3/);
+    expect(sql).not.toContain("doc-1");
+    expect(params).toEqual(["doc-1", ["h1", "h2"], 3, 2]);
+
+    const miss = makeStore(() => [], () => []);
+    expect(await miss.store.findDocumentWithSameContent("doc-1", ["h1"])).toBeNull();
+    const empty = makeStore(() => [], () => []);
+    expect(await empty.store.findDocumentWithSameContent("doc-1", [])).toBeNull();
+    expect(empty.plainCalls).toHaveLength(0);
+  });
+
   it("hasEmbedding checks rag_embeddings for the chunk id with a bound parameter", async () => {
     const yes = makeStore(() => [], () => [{ found: 1 }]);
     expect(await yes.store.hasEmbedding("c'1")).toBe(true);

@@ -90,6 +90,7 @@ function setup(opts: { sourceType?: "pdf" | "url"; extracted?: ExtractedDocument
       filePath: "documents/doc-1/source.pdf",
     }),
     getExistingChunkStates: jest.fn().mockResolvedValue(opts.existing ?? []),
+    findDocumentWithSameContent: jest.fn().mockResolvedValue(null),
     updateJobProgress: jest.fn().mockResolvedValue(undefined),
     applyIngestResult: jest.fn().mockResolvedValue({ documentMissing: false }),
     finishJob: jest.fn().mockResolvedValue(undefined),
@@ -213,6 +214,30 @@ describe("RagIngestPipeline", () => {
     const s = setup({ chunks: [] });
     await s.pipeline.run(job);
     expect(s.store.failJob).toHaveBeenCalledWith("7", "No content to index", []);
+  });
+
+  it("fails a document whose content duplicates another document, before tagging (e.g. a URL that redirects to one already added)", async () => {
+    const s = setup({ chunks: drafts(3) });
+    s.store.findDocumentWithSameContent.mockResolvedValue({ id: "doc-0", title: "Healthy Living with Diabetes" });
+    await s.pipeline.run(job);
+    expect(s.store.findDocumentWithSameContent).toHaveBeenCalledWith("doc-1", ["h0", "h1", "h2"]);
+    expect(s.store.failJob).toHaveBeenCalledWith(
+      "7",
+      'Same content as the existing document "Healthy Living with Diabetes"; delete this duplicate',
+      [],
+    );
+    expect(s.tagging.tagAll).not.toHaveBeenCalled();
+    expect(s.vector.embedDocuments).not.toHaveBeenCalled();
+    expect(s.store.applyIngestResult).not.toHaveBeenCalled();
+  });
+
+  it("shortens a long duplicate title so the failure message stays readable", async () => {
+    const s = setup({ chunks: drafts(1) });
+    s.store.findDocumentWithSameContent.mockResolvedValue({ id: "doc-0", title: `https://x.test/${"a".repeat(300)}` });
+    await s.pipeline.run(job);
+    const message: string = s.store.failJob.mock.calls[0][1];
+    expect(message.length).toBeLessThanOrEqual(200);
+    expect(message).toMatch(/^Same content as the existing document "https:\/\/x\.test\/a+…"; delete this duplicate$/);
   });
 
   it("(c) fails when more than half of the tag results are null", async () => {

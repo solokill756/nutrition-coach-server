@@ -1,12 +1,14 @@
 import { BadGatewayException, NotFoundException } from "@nestjs/common";
 import { RECIPE_COMMUNITY_ACCESS_WHERE, RecipeBuilderService } from "./recipe-builder.service";
+import { buildLlmUserProfile, formatLlmUserBlock } from "../nutrition/llm-user-profile";
+import { sampleRecipeContext } from "../nutrition/__fixtures__/llm-context.fixture";
 
 function createService() {
-  const retrievalService: any = {
-    retrieve: jest.fn().mockResolvedValue([]),
+  const userReferenceService: any = {
+    retrieve: jest.fn().mockResolvedValue({ text: "None.", used: [] }),
   };
   const ollamaService: any = { chat: jest.fn() };
-  const config: any = { get: jest.fn((k: string) => (k === "TOP_K" ? 8 : undefined)) };
+  const config: any = { get: jest.fn() };
   const userContextService: any = { assembleRecipeGenerationContext: jest.fn() };
   const stapleFoodService: any = { listWithFood: jest.fn().mockResolvedValue([]) };
   const foodService: any = { searchFood: jest.fn().mockResolvedValue(null) };
@@ -50,7 +52,7 @@ function createService() {
   };
 
   const service = new RecipeBuilderService(
-    retrievalService,
+    userReferenceService,
     ollamaService,
     config,
     userContextService,
@@ -64,7 +66,7 @@ function createService() {
   );
   return {
     service,
-    retrievalService,
+    userReferenceService,
     ollamaService,
     userContextService,
     stapleFoodService,
@@ -397,8 +399,8 @@ describe("RecipeBuilderService AI safeguards", () => {
   });
 
   it("handles missing RAG context without an unhandled crash", async () => {
-    const { service, ollamaService, retrievalService, userContextService, stapleFoodService, foodRepo } = createService();
-    retrievalService.retrieve.mockResolvedValueOnce([]);
+    const { service, ollamaService, userReferenceService, userContextService, stapleFoodService, foodRepo } = createService();
+    userReferenceService.retrieve.mockResolvedValueOnce({ text: "None.", used: [] });
     const stapleFood = { id: 10, foodName: "Egg", calories: 70, protein: 6, carbs: 1, fat: 5, sodium: 60, fiber: 0, servingSize: 50, servingUnit: "g" };
     stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
     userContextService.assembleRecipeGenerationContext.mockResolvedValue(makeRecipeCtx());
@@ -517,8 +519,8 @@ describe("RecipeBuilderService meal targets and prompt", () => {
     expect(user.content).not.toMatch(/\n {2}"/);
   });
 
-  it("sends a compact profile and whole references instead of the full generation context", async () => {
-    const { service, ollamaService, retrievalService, userContextService, stapleFoodService, foodRepo } = createService();
+  it("sends the shared profile and whole references instead of the full generation context", async () => {
+    const { service, ollamaService, userReferenceService, userContextService, stapleFoodService, foodRepo } = createService();
     const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
     stapleFoodService.listWithFood.mockResolvedValue([stapleFood]);
     foodRepo.find.mockResolvedValue([stapleFood]);
@@ -538,7 +540,11 @@ describe("RecipeBuilderService meal targets and prompt", () => {
       id: "c1", source: "moh.pdf", title: "Hướng dẫn › Tăng huyết áp", content: longTable,
       domain: "conditions", score: 0.9, page: 7, blockKind: "table", link: "https://moh.example/g.pdf",
     };
-    retrievalService.retrieve.mockResolvedValueOnce([ref]);
+    userReferenceService.retrieve.mockResolvedValueOnce({
+      text: `[1] Hướng dẫn › Tăng huyết áp (page 7; table; source: https://moh.example/g.pdf)
+${longTable}`,
+      used: [ref],
+    });
     ollamaService.chat.mockResolvedValueOnce(
       JSON.stringify({
         recipe: { name: "Chicken Bowl", servings: 1, ingredients: [{ foodId: 10, amount: 1 }], steps: [{ order: 1, instruction: "cook" }] },
@@ -549,12 +555,10 @@ describe("RecipeBuilderService meal targets and prompt", () => {
     const result = await service.generateRecipe({ mealSlot: "dinner", foodIds: [10] } as any, 1);
 
     const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
-    expect(user.content).toContain(
-      'User (JSON):\n{"age":52,"sex":"male","dietType":"omnivore","allergies":["peanut"],"fitnessLevel":"light",' +
-        '"goals":["lose_weight"],"healthConditions":["hypertension"],' +
-        '"nutrientLimits":["fiber min 25 g","sodium max 1500 mg"],"recentRecipes":["Pho bo"]}',
-    );
-    for (const dropped of ["userId", "todayIntake", "goalsDetailed", "recentHistory", "mealSplits", "goalWeight", "dailyTargetCalories"]) {
+    expect(user.content).toContain('"age":52');
+    expect(user.content).toContain('"allergies":["peanut"]');
+    expect(user.content).toContain('Recent recipes (avoid repeating): ["Pho bo"]');
+    for (const dropped of ["userId", "todayIntake", "goalsDetailed", "recentHistory", "mealSplits", "dailyTargetCalories"]) {
       expect(user.content).not.toContain(`"${dropped}"`);
     }
     expect(user.content).toContain(`[1] Hướng dẫn › Tăng huyết áp (page 7; table; source: https://moh.example/g.pdf)\n${longTable}`);
@@ -608,5 +612,61 @@ describe("RecipeBuilderService meal targets and prompt", () => {
   it("verifyBudget warns when phosphorus still exceeds remaining", () => {
     const { service } = createService();
     expect((service as any).verifyBudget({ nutritionPerServing: { phosphorusMg: 400 } }, { phosphorusMg: 200 }, [])).toBe("warning");
+  });
+});
+
+describe("RecipeBuilderService shared user block and references", () => {
+  const stapleFood = { id: 10, foodName: "Chicken", calories: 200, protein: 30, carbs: 0, fat: 8, sodium: 70, fiber: 0, servingSize: 100, servingUnit: "g" };
+  const ref: any = { id: "c1", source: "s.pdf", title: "T", content: "x", domain: "conditions", score: 0.9, link: "l" };
+
+  function setup(staple: any = stapleFood, ctx: any = sampleRecipeContext()) {
+    const h = createService();
+    h.stapleFoodService.listWithFood.mockResolvedValue([staple]);
+    h.userContextService.assembleRecipeGenerationContext.mockResolvedValue(ctx);
+    h.foodRepo.find.mockResolvedValue([staple]);
+    h.foodRepo.findOne.mockResolvedValue(staple);
+    h.ollamaService.chat.mockResolvedValue(
+      JSON.stringify({
+        recipe: { name: "R", servings: 1, ingredients: [{ foodId: staple.id, amount: 1 }], steps: [{ order: 1, instruction: "cook" }] },
+        recommendation: "",
+      }),
+    );
+    return h;
+  }
+
+  it("user prompt contains the shared user block", async () => {
+    const ctx = sampleRecipeContext();
+    const { service, ollamaService } = setup(stapleFood, ctx);
+    await service.generateRecipe({ mealSlot: "lunch", foodIds: [10] } as any, 1);
+    const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    expect(user.content).toContain(formatLlmUserBlock(buildLlmUserProfile(ctx)));
+  });
+
+  it("retrieves references once when none are given", async () => {
+    const { service, userReferenceService } = setup();
+    await service.generateRecipe({ mealSlot: "lunch", foodIds: [10] } as any, 1);
+    expect(userReferenceService.retrieve).toHaveBeenCalledTimes(1);
+    expect(userReferenceService.retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "recipe_generation" }),
+    );
+  });
+
+  it("reuses given references", async () => {
+    const { service, userReferenceService, ollamaService } = setup();
+    const response = await service.generateRecipe({ mealSlot: "lunch", foodIds: [10] } as any, 1, 0, {
+      references: { text: "[1] Ref", used: [ref] },
+    });
+    expect(userReferenceService.retrieve).not.toHaveBeenCalled();
+    const [, user] = ollamaService.chat.mock.calls.at(-1)[0] as { content: string }[];
+    expect(user.content).toContain("[1] Ref");
+    expect(response.evidence[0].id).toBe(ref.id);
+  });
+
+  it("warns but keeps allergen staples", async () => {
+    const egg = { ...stapleFood, id: 11, foodName: "Trứng gà" };
+    const { service } = setup(egg);
+    const response = await service.generateRecipe({ mealSlot: "lunch", foodIds: [11] } as any, 1);
+    expect(response.recipe.ingredients.map((i: any) => i.foodId)).toContain(11);
+    expect(response.safetyWarnings).toContain('"Trứng gà" may contain Eggs, which you are allergic to.');
   });
 });

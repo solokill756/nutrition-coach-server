@@ -18,10 +18,10 @@ import {
   UpdateRecipeDto,
 } from "./dto/recipe.dto";
 import { minutesFrom } from "./ai-minutes";
-import { RetrievalService } from "../retrieval/retrieval.service";
-import { RAG_CONFIDENCE_THRESHOLD } from "../retrieval/rag-confidence";
-import { buildRagReferenceBlock } from "../retrieval/rag-reference-block";
-import { formatThresholdMinMax } from "../nutrition/condition-related-thresholds";
+import { UserReferenceService, UserReferences } from "../retrieval/user-reference.service";
+import { ragQueryInputFromContext } from "../retrieval/personalized-rag-query";
+import { buildLlmUserProfile, formatLlmUserBlock } from "../nutrition/llm-user-profile";
+import { allergenWarnings } from "./safe-staples";
 import { OllamaService } from "../ollama/ollama.service";
 import { FoodService } from "../meal-planning/food.service";
 import {
@@ -37,7 +37,6 @@ import { RecipeIngredientEntity } from "./entities/recipe-ingredient.entity";
 import { RecipeStepEntity } from "./entities/recipe-step.entity";
 import { MealsService } from "../meal-planning/meals.service";
 import { FoodNutritionEntity } from "../meal-planning/entities/food-nutrition.entity";
-import { buildRecipeGenerationRagQuery } from "./recipe-rag-query";
 import { resolveClientDateKey } from "../common/date/calendar-day-bounds";
 import {
   MEAL_SPLITS,
@@ -51,8 +50,6 @@ import {
 import { RECIPE_PROMPTS } from "./constants/recipe-prompts";
 
 /** TypeORM maps `recipe.source` but not `recipe.source::jsonb` (PascalCase "Source" column). */
-/** Reference budget for recipe generation: a few whole chunks. */
-const RECIPE_REFERENCE_MAX_CHARS = 8000;
 
 export const RECIPE_COMMUNITY_ACCESS_WHERE =
   "(recipe.userId = :userId OR (recipe.source IS NOT NULL AND \"recipe\".\"Source\"::jsonb ->> 'shareWith' = '2'))";
@@ -62,7 +59,7 @@ export class RecipeBuilderService {
   private readonly logger = new Logger(RecipeBuilderService.name);
 
   constructor(
-    private readonly retrievalService: RetrievalService,
+    private readonly userReferenceService: UserReferenceService,
     private readonly ollamaService: OllamaService,
     private readonly config: ConfigService,
     private readonly userContextService: UserContextService,
@@ -103,6 +100,7 @@ export class RecipeBuilderService {
     input: RecipeBuilderRequest,
     userId: number,
     tzOffsetMinutes = 0,
+    options: { references?: UserReferences } = {},
   ): Promise<RecipeBuilderResponse> {
     if (userId == null) {
       throw new UnauthorizedException({
@@ -110,13 +108,14 @@ export class RecipeBuilderService {
         message: "Authentication is required to generate a recipe.",
       });
     }
-    return this.generateRecipeFromStaples(input, userId, tzOffsetMinutes);
+    return this.generateRecipeFromStaples(input, userId, tzOffsetMinutes, options);
   }
 
   private async generateRecipeFromStaples(
     input: RecipeBuilderRequest,
     userId: number,
     tzOffsetMinutes = 0,
+    options: { references?: UserReferences } = {},
   ): Promise<RecipeBuilderResponse> {
     if (!input.mealSlot) {
       throw new BadRequestException("mealSlot is required (breakfast | lunch | dinner | snack).");
@@ -185,33 +184,9 @@ export class RecipeBuilderService {
     const userContextCompat = this.toUserMealContextFromRecipeCtx(recipeCtx);
 
     const constraints = input.constraints || {};
-    const { question: ragQuery, hints: ragHints } = buildRecipeGenerationRagQuery(recipeCtx);
-    const query = ragQuery;
-    this.logger.log(
-      `[RAG] Recipe generation query userId=${userId} mealSlot=${input.mealSlot} ` +
-        `date=${dateKey} hints=${JSON.stringify(ragHints)} query="${query}"`,
-    );
-    const contexts = await this.retrievalService.retrieve(
-      query,
-      this.config.get<number>("TOP_K") || 8,
-      ragHints,
-    );
-
-
-    const contextsToUse = contexts.filter((c) => c.score >= RAG_CONFIDENCE_THRESHOLD);
-    this.logger.log(
-      `[RAG] RetrievalService.retrieve userId=${userId} intent=${ragHints.intent ?? "general"} ` +
-        `hasConditionContext=${ragHints.hasConditionContext ?? false} ` +
-        `query="${query.slice(0, 160)}${query.length > 160 ? "…" : ""}" ` +
-        `rawHits=${contexts.length} usedAfterScore>=${RAG_CONFIDENCE_THRESHOLD}=${contextsToUse.length} ` +
-        `topScore=${contexts[0]?.score != null ? contexts[0].score.toFixed(3) : "n/a"}`,
-    );
-    if (contexts.length > 0 && contextsToUse.length === 0) {
-      this.logger.warn(
-        `[RAG] All ${contexts.length} chunks scored below ${RAG_CONFIDENCE_THRESHOLD}; LLM prompt Reference section will be empty.`,
-      );
-    }
-    const references = buildRagReferenceBlock(contextsToUse, RECIPE_REFERENCE_MAX_CHARS);
+    const references =
+      options.references ??
+      (await this.userReferenceService.retrieve(ragQueryInputFromContext(recipeCtx, "recipe_generation")));
 
     const allowedIds = [...stapleIds].join(", ");
     // The same per-meal target the result is scored against, so the model
@@ -277,7 +252,8 @@ export class RecipeBuilderService {
     const userPrompt = RECIPE_PROMPTS.buildUserPrompt(
       input.mealSlot,
       dateKey,
-      this.toPromptProfile(recipeCtx),
+      formatLlmUserBlock(buildLlmUserProfile(recipeCtx)),
+      recipeCtx.recentRecipeLogs.map((r) => r.recipeName),
       staplePayload,
       budgetLines,
       constraints,
@@ -345,12 +321,15 @@ export class RecipeBuilderService {
       recipe: enrichedRecipe,
       alternativeRecipes: parsedData.alternativeRecipes || [],
       recommendation: parsedData.recommendation || "",
-      safetyWarnings: this.validateNutritionAgainstThresholds(
-        enrichedRecipe,
-        userContextCompat,
-        input.mealSlot,
-        mealShare(recipeCtx, input.mealSlot),
-      ),
+      safetyWarnings: [
+        ...allergenWarnings(staples, recipeCtx.profile.allergies ?? []),
+        ...this.validateNutritionAgainstThresholds(
+          enrichedRecipe,
+          userContextCompat,
+          input.mealSlot,
+          mealShare(recipeCtx, input.mealSlot),
+        ),
+      ],
       generationWarnings,
       budgetStatus,
       score,
@@ -368,28 +347,6 @@ export class RecipeBuilderService {
         chunkIndex: c.chunkIndex,
         chunkTotal: c.chunkTotal,
       })),
-    };
-  }
-
-  /**
-   * The user as the recipe model sees them. Intake, remaining budgets, meal
-   * split and calorie target are left out: the budget lines already turn them
-   * into per-meal numbers, and sending both only repeats them.
-   */
-  private toPromptProfile(ctx: RecipeGenerationContext) {
-    const limits = [...ctx.thresholds, ...(ctx.conditionRelatedThresholds ?? [])]
-      .map(formatThresholdMinMax)
-      .filter(Boolean);
-    return {
-      age: ctx.profile.age ?? null,
-      sex: ctx.profile.sex ?? null,
-      dietType: ctx.profile.dietType ?? null,
-      allergies: ctx.profile.allergies ?? [],
-      fitnessLevel: ctx.profile.fitnessLevel ?? null,
-      goals: ctx.goalsDetailed.map((g) => g.goalType),
-      healthConditions: ctx.healthDetailed.map((h) => h.conditionName),
-      nutrientLimits: [...new Set(limits)],
-      recentRecipes: ctx.recentRecipeLogs.map((r) => r.recipeName),
     };
   }
 

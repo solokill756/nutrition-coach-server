@@ -27,6 +27,10 @@ import {
 } from "./recipe-nutrition-scoring";
 import { FridgeStapleAllocationService } from "./fridge-staple-allocation.service";
 import type { StapleAllocationMap } from "./fridge-staple-allocation";
+import { filterSafeStaples } from "./safe-staples";
+import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-unit.service";
+import { UserReferenceService, type UserReferences } from "../retrieval/user-reference.service";
+import { ragQueryInputFromContext } from "../retrieval/personalized-rag-query";
 
 type FridgeSlotResult = {
   mealSlot: RecipeMealSlot;
@@ -66,7 +70,39 @@ export class FridgeMealPlannerService {
     @InjectRepository(RecipeEntity)
     private readonly recipeRepo: Repository<RecipeEntity>,
     private readonly stapleAllocationService: FridgeStapleAllocationService,
+    private readonly userReferences: UserReferenceService,
+    private readonly units: ConditionNutrientUnitService,
   ) {}
+
+  /** Drops allergen / over-limit staples and retrieves RAG references once for the run. */
+  private async prepareSafeStaples(
+    staples: FoodNutritionEntity[],
+    ctx: RecipeGenerationContext,
+  ): Promise<{ safe: FoodNutritionEntity[]; removedWarnings: string[]; references: UserReferences }> {
+    const { safe, removed, unchecked } = filterSafeStaples(
+      staples,
+      {
+        allergies: ctx.profile.allergies,
+        conditionRelatedThresholds: ctx.conditionRelatedThresholds,
+        dailyTargetCalories: ctx.dailyTargetCalories,
+      },
+      this.units,
+    );
+    for (const item of unchecked) {
+      this.logger.warn(
+        `Staple safety check skipped foodId=${item.foodId} nutrient=${item.nutrient}: ${item.reason}`,
+      );
+    }
+    if (safe.length < 2) {
+      throw new BadRequestException(
+        `Not enough suitable staple foods. ${removed.map((r) => r.reason).join(" ")} Add more pantry items.`,
+      );
+    }
+    const references = await this.userReferences.retrieve(
+      ragQueryInputFromContext(ctx, "recipe_generation"),
+    );
+    return { safe, removedWarnings: removed.map((r) => r.reason), references };
+  }
 
   private _recipeDetailCache = new Map<string, unknown>();
 
@@ -171,6 +207,7 @@ export class FridgeMealPlannerService {
       "breakfast",
       tzOffsetMinutes,
     );
+    const { safe, removedWarnings, references } = await this.prepareSafeStaples(staples, ctx);
     const loggedSlots = await this.loggedMealSlots(userId, dateKey, tzOffsetMinutes);
     const existingBySlot = await this.generatedRecipeRowsBySlot(userId, dateKey);
     const slots: FridgeSlotResult[] = [];
@@ -222,10 +259,11 @@ export class FridgeMealPlannerService {
     // Meals without a target (0% of the user's day) get no staples: they are skipped below.
     const plannedSlots = slotsToGenerate.filter((slot) => targetsBySlot.has(slot));
     const allocationResult = await this.stapleAllocationService.allocateStaplesForPlan({
-      staples,
+      staples: safe,
       generatingSlots: plannedSlots,
       ctx,
       slotTargets: targetsBySlot,
+      references,
     });
     if (allocationResult.source === "heuristic") {
       this.logger.warn(
@@ -245,11 +283,13 @@ export class FridgeMealPlannerService {
         });
         continue;
       }
-      slots.push(await this.generateSlot(userId, dateKey, mealSlot, staples, {
+      slots.push(await this.generateSlot(userId, dateKey, mealSlot, safe, {
         ...options,
         tzOffsetMinutes,
         target,
         selectedFoodIds: allocations[mealSlot] ?? [],
+        references,
+        removedWarnings,
       }));
     }
     return { dateKey, sourceType: SOURCE_TYPE, slots: this.sortSlots(slots) };
@@ -273,6 +313,7 @@ export class FridgeMealPlannerService {
         mealSlot,
         tzOffsetMinutes,
       );
+      const { safe, removedWarnings, references } = await this.prepareSafeStaples(staples, ctx);
       const loggedSlots = await this.loggedMealSlots(userId, dateKey, tzOffsetMinutes);
       if (loggedSlots.has(mealSlot)) {
         return {
@@ -304,10 +345,11 @@ export class FridgeMealPlannerService {
       const alreadyAllocated = await this.buildAlreadyAllocated(userId, dateKey, mealSlot);
       const targetsBySlot = this.targetsForSlots(ctx, [mealSlot], remainingCalories);
       const allocationResult = await this.stapleAllocationService.allocateStaplesForPlan({
-        staples,
+        staples: safe,
         generatingSlots: [mealSlot],
         ctx,
         slotTargets: targetsBySlot,
+        references,
         alreadyAllocated,
         regenerateSlot: mealSlot,
       });
@@ -316,11 +358,13 @@ export class FridgeMealPlannerService {
           `Fridge regenerate staple allocation used heuristic dateKey=${dateKey} slot=${mealSlot} reason=${allocationResult.fallbackReason ?? "unknown"}`,
         );
       }
-      return await this.generateSlot(userId, dateKey, mealSlot, staples, {
+      return await this.generateSlot(userId, dateKey, mealSlot, safe, {
         replace: true,
         tzOffsetMinutes,
         target,
         selectedFoodIds: allocationResult.allocations[mealSlot] ?? [],
+        references,
+        removedWarnings,
       });
     } finally {
       await this.releaseGenerationLock(userId);
@@ -359,6 +403,8 @@ export class FridgeMealPlannerService {
       target?: MealNutritionTarget;
       selectedFoodIds: number[];
       tzOffsetMinutes?: number;
+      references: UserReferences;
+      removedWarnings: string[];
     },
   ): Promise<FridgeSlotResult> {
     if (!options.replace) {
@@ -412,11 +458,14 @@ export class FridgeMealPlannerService {
         },
       },
       userId,
+      options.tzOffsetMinutes ?? 0,
+      { references: options.references },
     );
+    const generationWarnings = [...options.removedWarnings, ...(generation.generationWarnings ?? [])];
 
     const warnings = [
       ...generation.safetyWarnings,
-      ...(generation.generationWarnings ?? []),
+      ...generationWarnings,
       ...scoreWarnings(generation.recipe.nutritionPerServing ?? {}, target),
     ];
     const score = scoreNutrition(generation.recipe.nutritionPerServing ?? {}, target);
@@ -433,7 +482,7 @@ export class FridgeMealPlannerService {
         warnings,
         recommendation: generation.recommendation ?? "",
         safetyWarnings: generation.safetyWarnings ?? [],
-        generationWarnings: generation.generationWarnings ?? [],
+        generationWarnings,
         selectedFoodIds: selectedFoods.map((food) => Number(food.id)),
         budgetStatus: generation.budgetStatus ?? "ok",
       },
@@ -445,7 +494,7 @@ export class FridgeMealPlannerService {
       recipe: saved,
       recommendation: generation.recommendation ?? "",
       safetyWarnings: generation.safetyWarnings ?? [],
-      generationWarnings: generation.generationWarnings ?? [],
+      generationWarnings,
     };
   }
 

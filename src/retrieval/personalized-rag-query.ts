@@ -1,4 +1,4 @@
-import type { UserNutrientThreshold } from "../nutrition/user-context.service";
+import type { RecipeGenerationContext, UserNutrientThreshold } from "../nutrition/user-context.service";
 import { formatThresholdMinMax } from "../nutrition/condition-related-thresholds";
 import type { RetrievalHints } from "./retrieval.types";
 
@@ -131,5 +131,24 @@ export function buildPersonalizedRagQuery(input: PersonalizedRagQueryInput): {
       intent,
       hasConditionContext: hasConditionThresholds || hasHealthConditions,
     },
+  };
+}
+
+/** Maps an assembled user context to the shared RAG query input. */
+export function ragQueryInputFromContext(
+  ctx: RecipeGenerationContext,
+  purpose: PersonalizedRagQueryInput["purpose"],
+): PersonalizedRagQueryInput {
+  return {
+    purpose,
+    profile: {
+      sex: ctx.profile.sex,
+      dietType: ctx.profile.dietType,
+      allergies: ctx.profile.allergies,
+      fitnessLevel: ctx.profile.fitnessLevel,
+    },
+    goalTypes: ctx.goalsDetailed.map((g) => g.goalType),
+    healthDetailed: ctx.healthDetailed,
+    conditionRelatedThresholds: ctx.conditionRelatedThresholds ?? [],
   };
 }

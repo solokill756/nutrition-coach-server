@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, OnModuleDestroy } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { Between, In, Repository } from "typeorm";
+import { Between, Repository } from "typeorm";
 import NodeCache from "node-cache";
 import { AppUserEntity } from "../auth/entities/app-user.entity";
 import { ExerciseLogEntity } from "../exercise-logs/entities/exercise-log.entity";
@@ -8,14 +8,12 @@ import { LogFoodEntity } from "../nutrition/entities/log-food.entity";
 import { UserGoalEntity } from "../nutrition/entities/user-goal.entity";
 import { UserHealthConditionEntity } from "../nutrition/entities/user-health-condition.entity";
 import { UserNutritionalThresholdEntity } from "../nutrition/entities/user-nutritional-threshold.entity";
-import { ConditionNutrientRuleEntity } from "../nutrition/entities/condition-nutrient-rule.entity";
 import { calendarDayBounds, resolveClientDateKey } from "../common/date/calendar-day-bounds";
 import { HydrationTargetService } from "../common/hydration/hydration-target.service";
 import { WaterLogEntity } from "../nutrition/entities/water-log.entity";
 import { DiaryService } from "../nutrition/diary.service";
 import { NutritionCalculatorService } from "../nutrition/nutrition-calculator.service";
-import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-unit.service";
-import { buildConditionRelatedThresholds } from "../nutrition/condition-related-thresholds";
+import { UserContextService } from "../nutrition/user-context.service";
 import { WeightEntity } from "../weight/entities/weight.entity";
 import { WeightService } from "../weight/weight.service";
 import {
@@ -110,14 +108,12 @@ export class DashboardService implements OnModuleDestroy {
     private readonly logFoodRepo: Repository<LogFoodEntity>,
     @InjectRepository(UserNutritionalThresholdEntity)
     private readonly thresholdRepo: Repository<UserNutritionalThresholdEntity>,
-    @InjectRepository(ConditionNutrientRuleEntity)
-    private readonly ruleRepo: Repository<ConditionNutrientRuleEntity>,
     private readonly diaryService: DiaryService,
     private readonly nutritionCalculator: NutritionCalculatorService,
-    private readonly conditionNutrientUnits: ConditionNutrientUnitService,
     private readonly weightService: WeightService,
     private readonly hydrationTargetService: HydrationTargetService,
     private readonly dashboardAlertService: DashboardAlertService,
+    private readonly userContextService: UserContextService,
     private readonly dashboardAiService: DashboardAiService,
     private readonly dashboardEventBus: DashboardEventBus,
   ) {
@@ -267,47 +263,15 @@ export class DashboardService implements OnModuleDestroy {
 
     const base = await this.loadDashboardBase(userId, dateKey, tzOffsetMinutes);
 
-    const conditions = await this.conditionRepo.find({
-      where: { userId, isActive: true },
-    });
-    const conditionKeys = conditions
-      .map((item) => String(item.conditionName || "").toLowerCase())
-      .filter(Boolean);
-    const conditionRules =
-      conditionKeys.length > 0
-        ? await this.ruleRepo.find({
-            where: { conditionKey: In(conditionKeys), isActive: true },
-          })
-        : [];
-    const conditionRelatedThresholds = buildConditionRelatedThresholds(
-      conditionKeys,
-      base.thresholds,
-      conditionRules.map((r) => ({
-        conditionKey: r.conditionKey,
-        nutrient: r.nutrient,
-        minAmount: r.minAmount,
-        maxAmount: r.maxAmount,
-        unit: r.unit,
-      })),
-      (n) => this.conditionNutrientUnits.normalizeNutrient(n),
+    const userContext = await this.userContextService.assembleRecipeGenerationContext(
+      userId,
+      dateKey,
+      "breakfast",
+      tzOffsetMinutes,
     );
 
     const ctx: DashboardAiSuggestionContext = {
-      user: {
-        age: base.user.age ?? null,
-        sex: base.user.sex,
-        weightKg: base.currentKgFromLog ?? base.userWeight,
-        goalWeightKg: base.user.goalWeight != null && Number.isFinite(Number(base.user.goalWeight)) ? Number(base.user.goalWeight) : null,
-        fitnessLevel: base.user.fitnessLevel,
-        dietType: base.user.dietType,
-        allergies: Array.isArray(base.user.allergies) ? base.user.allergies : [],
-        goalType: base.activeGoal?.goalType ?? null,
-        conditions: conditions.map((item) => item.conditionName).filter((value) => value.trim().length > 0),
-      },
-      healthDetailed: conditions.map((item) => ({
-        conditionName: item.conditionName,
-      })),
-      conditionRelatedThresholds,
+      userContext,
       calories: {
         target: base.targetCalories,
         consumed: base.consumed,
@@ -378,7 +342,7 @@ export class DashboardService implements OnModuleDestroy {
       }),
       this.goalRepo.findOne({
         where: { userId, isActive: true },
-        order: { startDate: "DESC" },
+        order: { startDate: "DESC", id: "DESC" },
       }),
       this.diaryService.getDay(userId, dateKey, tzOffsetMinutes),
       this.aggregateExercise(userId, start, end),

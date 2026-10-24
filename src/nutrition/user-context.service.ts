@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, MoreThanOrEqual, In, Between } from "typeorm";
@@ -12,11 +12,13 @@ import { AppUserEntity } from "../auth/entities/app-user.entity";
 import { FoodNutritionEntity } from "../meal-planning/entities/food-nutrition.entity";
 import { RecipeEntity } from "../recipe-builder/entities/recipe.entity";
 import { ConditionNutrientRuleEntity } from "./entities/condition-nutrient-rule.entity";
+import { WeightEntity } from "../weight/entities/weight.entity";
 import { ConditionNutrientRuleApplierService } from "./condition-nutrient-rule-applier.service";
 import { ConditionNutrientUnitService } from "./condition-nutrient-unit.service";
 import { buildConditionRelatedThresholds } from "./condition-related-thresholds";
 import { calendarDayBounds, localDateKeyNow } from "../common/date/calendar-day-bounds";
 import { sumDayIntake, type DayIntakeTotals } from "./day-intake-totals";
+import { DashboardEventBus, type DiaryChangedListener } from "../dashboard/dashboard-event-bus";
 import { resolveMealSplits, type MealSplitsFraction } from "./meal-splits";
 
 export type RecipeGenerationMealSlot = "breakfast" | "lunch" | "dinner" | "snack";
@@ -130,7 +132,7 @@ export interface UserMealContext {
 }
 
 @Injectable()
-export class UserContextService {
+export class UserContextService implements OnModuleDestroy {
   private readonly logger = new Logger(UserContextService.name);
   private readonly logHistoryDays: number;
 
@@ -140,6 +142,8 @@ export class UserContextService {
   private readonly pendingLoads = new Map<number, Promise<UserStaticContext>>();
   /** Simple LRU order tracking (array of userIds, most-recently-used at end). */
   private readonly lruOrder: number[] = [];
+  /** Profile/health/goal changes emit a diary-changed event; drop that user's cached context. */
+  private readonly diaryChangedListener: DiaryChangedListener = (e) => this.invalidateUserCache(e.userId);
 
   constructor(
     @InjectRepository(UserGoalEntity)
@@ -158,11 +162,19 @@ export class UserContextService {
     private readonly recipeRepo: Repository<RecipeEntity>,
     @InjectRepository(ConditionNutrientRuleEntity)
     private readonly ruleRepo: Repository<ConditionNutrientRuleEntity>,
+    @InjectRepository(WeightEntity)
+    private readonly weightRepo: Repository<WeightEntity>,
     private readonly applier: ConditionNutrientRuleApplierService,
     private readonly units: ConditionNutrientUnitService,
     config: ConfigService,
+    private readonly eventBus: DashboardEventBus,
   ) {
+    this.eventBus.onDiaryChanged(this.diaryChangedListener);
     this.logHistoryDays = Number(config.get<number>("USV_LOG_HISTORY_DAYS")) || DEFAULT_LOG_HISTORY_DAYS;
+  }
+
+  onModuleDestroy(): void {
+    this.eventBus.removeListener(this.diaryChangedListener);
   }
 
   /** Invalidate cached static context for a user (call after profile/goal/health updates). */
@@ -230,11 +242,15 @@ export class UserContextService {
   }
 
   private async fetchStaticContext(userId: number): Promise<UserStaticContext> {
-    const [user, goals, health, thresholds] = await Promise.all([
+    const [user, goals, health, thresholds, latestWeight] = await Promise.all([
       this.userRepo.findOne({ where: { id: userId } }),
-      this.goalRepo.find({ where: { userId, isActive: true }, order: { id: "DESC" } }),
+      this.goalRepo.find({ where: { userId, isActive: true }, order: { startDate: "DESC", id: "DESC" } }),
       this.healthRepo.find({ where: { userId, isActive: true } }),
       this.thresholdRepo.find({ where: { userId, isActive: true } }),
+      this.weightRepo.findOne({
+        where: { userId, delFlag: false },
+        order: { recordedOn: "DESC", recordedAt: "DESC" },
+      }),
     ]);
 
     if (!user) throw new Error(`User ${userId} not found`);
@@ -272,7 +288,7 @@ export class UserContextService {
       profile: {
         age: user.age,
         sex: user.sex,
-        weight: user.weight,
+        weight: latestWeight != null && Number.isFinite(Number(latestWeight.weightKg)) ? Number(latestWeight.weightKg) : user.weight,
         goalWeight: user.goalWeight,
         height: user.height,
         dietType: user.dietType,

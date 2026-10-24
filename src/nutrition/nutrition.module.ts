@@ -10,6 +10,7 @@ import { FoodNutritionEntity } from "../meal-planning/entities/food-nutrition.en
 import { RecipeEntity } from "../recipe-builder/entities/recipe.entity";
 import { UserStapleFoodEntity } from "./entities/user-staple-food.entity";
 import { ConditionNutrientRuleEntity } from "./entities/condition-nutrient-rule.entity";
+import { WeightEntity } from "../weight/entities/weight.entity";
 import { UserContextService } from "./user-context.service";
 import { UserStapleFoodService } from "./user-staple-food.service";
 import { NutritionCalculatorService } from "./nutrition-calculator.service";
@@ -31,6 +32,7 @@ import { UserThresholdPersistenceService } from "./user-threshold-persistence.se
       RecipeEntity,
       UserStapleFoodEntity,
       ConditionNutrientRuleEntity,
+      WeightEntity,
     ]),
   ],
   providers: [

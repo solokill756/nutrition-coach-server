@@ -27,7 +27,9 @@ export class OnboardingController {
 
   @Patch("basic-info")
   async updateBasicInfo(@Req() req: AuthenticatedRequest, @Body() body: UpdateBasicInfoDto) {
-    return this.onboardingService.updateBasicInfo(req.user.userId, body);
+    const result = await this.onboardingService.updateBasicInfo(req.user.userId, body);
+    this.dashboardEventBus.emitDiaryChanged(req.user.userId, resolveClientDateKey(undefined, 0));
+    return result;
   }
 
   @Patch("health-profile")
@@ -40,12 +42,16 @@ export class OnboardingController {
 
   @Patch("goal-preferences")
   async updateGoalPreferences(@Req() req: AuthenticatedRequest, @Body() body: UpdateGoalPreferencesDto) {
-    return this.onboardingService.updateGoalPreferences(req.user.userId, body);
+    const result = await this.onboardingService.updateGoalPreferences(req.user.userId, body);
+    this.dashboardEventBus.emitDiaryChanged(req.user.userId, resolveClientDateKey(undefined, 0));
+    return result;
   }
 
   @Post("complete")
   async complete(@Req() req: AuthenticatedRequest, @Body() body: CompleteOnboardingDto) {
-    return this.onboardingService.complete(req.user.userId, body);
+    const result = await this.onboardingService.complete(req.user.userId, body);
+    this.dashboardEventBus.emitDiaryChanged(req.user.userId, resolveClientDateKey(undefined, 0));
+    return result;
   }
 
   @Post("preview-nutrition")

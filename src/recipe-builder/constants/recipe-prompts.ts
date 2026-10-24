@@ -8,7 +8,7 @@ export const RECIPE_PROMPTS = {
       // Stated once: repeating it only cost tokens.
       "INGREDIENT RULE: each ingredient is ONLY { foodId, amount }, where amount is the quantity in catalog reference portions for that foodId (0.5 = half its catalog serving, 1 = one serving). Do not output names, units, grams or any nutrition: the server looks those up from the database.",
       "Respect allergies, health conditions, nutrient limits, the per-meal target and the numeric budgets in the user message.",
-      "Avoid repeating the user's recentRecipes.",
+      "Avoid repeating the user's recent recipes.",
       "Do not state any number that is not in the user message or the references.",
       "recommendation: one or two sentences on why this recipe suits this user; cite a reference as [n] when a point comes from it.",
       "Output ONLY JSON:",
@@ -28,7 +28,8 @@ export const RECIPE_PROMPTS = {
   buildUserPrompt: (
     mealSlot: string,
     dateKey: string,
-    userProfile: object,
+    userBlock: string,
+    recentRecipes: string[],
     staplePayload: object[],
     budgetLines: string[],
     constraints: Record<string, unknown>,
@@ -37,7 +38,8 @@ export const RECIPE_PROMPTS = {
     [
       `Meal slot: ${mealSlot} (date ${dateKey}).`,
       // Compact JSON: indentation is pure token overhead for the model.
-      `User (JSON):\n${JSON.stringify(userProfile)}`,
+      userBlock,
+      `Recent recipes (avoid repeating): ${JSON.stringify(recentRecipes)}`,
       `Staple foods (JSON):\n${JSON.stringify(staplePayload)}`,
       budgetLines.length ? `Budget hints:\n- ${budgetLines.join("\n- ")}` : "",
       constraints.preparationTime ? `Max preparation time: ${constraints.preparationTime} minutes` : "",

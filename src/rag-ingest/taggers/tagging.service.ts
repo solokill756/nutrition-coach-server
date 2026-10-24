@@ -2,7 +2,7 @@ import { Injectable, Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { GeminiTagger } from "./gemini-tagger";
 import { JevTagger } from "./jev-tagger";
-import type { TagResult } from "./tagger.types";
+import type { TagInput, TagResult } from "./tagger.types";
 
 const MAX_CONSECUTIVE_JEV_FAILURES = 3;
 
@@ -27,7 +27,7 @@ export class TaggingService {
   ) {}
 
   async tagAll(
-    texts: string[],
+    inputs: TagInput[],
     onProgress?: (done: number, total: number) => void,
   ): Promise<{ results: (TagResult | null)[]; warnings: string[] }> {
     const results: (TagResult | null)[] = [];
@@ -42,11 +42,11 @@ export class TaggingService {
     }
 
     let consecutiveJevFailures = 0;
-    for (let i = 0; i < texts.length; i++) {
+    for (let i = 0; i < inputs.length; i++) {
       let result: TagResult | null = null;
       if (!useGemini) {
         try {
-          result = await this.jev.tag(texts[i]);
+          result = await this.jev.tag(inputs[i]);
           consecutiveJevFailures = 0;
         } catch (err) {
           const d = describeError(err);
@@ -59,32 +59,32 @@ export class TaggingService {
           }
         }
       }
-      if (!result) result = await this.tryGemini(texts[i], i + 1);
+      if (!result) result = await this.tryGemini(inputs[i], i + 1);
       results.push(result);
-      onProgress?.(i + 1, texts.length);
+      onProgress?.(i + 1, inputs.length);
     }
     return { results, warnings };
   }
 
-  async tagOne(text: string): Promise<TagResult> {
+  async tagOne(input: TagInput): Promise<TagResult> {
     if (!this.forcedGemini() && this.hasJevKey()) {
       try {
-        return await this.jev.tag(text);
+        return await this.jev.tag(input);
       } catch (err) {
         this.logger.warn(`jev failed on retag: ${describeError(err).reason}; trying gemini`);
       }
     }
     try {
-      return await this.gemini.tag(text);
+      return await this.gemini.tag(input);
     } catch (err) {
       this.logger.warn(`gemini failed on retag: ${describeError(err).reason}`);
       throw err;
     }
   }
 
-  private async tryGemini(text: string, chunkNo: number): Promise<TagResult | null> {
+  private async tryGemini(input: TagInput, chunkNo: number): Promise<TagResult | null> {
     try {
-      return await this.gemini.tag(text);
+      return await this.gemini.tag(input);
     } catch (err) {
       this.logger.warn(`gemini failed on chunk ${chunkNo}: ${describeError(err).reason}`);
       return null;

@@ -18,14 +18,6 @@ type CorpusPayload = {
   docs: DomainDoc[];
 };
 
-type EmbeddingSyncStats = {
-  added: number;
-  updated: number;
-  removed: number;
-  skipped: number;
-  failed: number;
-};
-
 @Injectable()
 export class PostgresRagService implements OnModuleDestroy {
   private readonly enabled: boolean;
@@ -228,57 +220,6 @@ export class PostgresRagService implements OnModuleDestroy {
     return { ok: actual === expected, actual, expected };
   }
 
-  async syncChunkEmbeddings(
-    records: Array<{ id: string; contentHash: string; embedding: number[] }>,
-    activeIds: string[]
-  ): Promise<EmbeddingSyncStats> {
-    if (!this.isEnabled()) {
-      return { added: 0, updated: 0, removed: 0, skipped: 0, failed: records.length };
-    }
-
-    const embeddingsTable = this.tableRef(this.embeddingsTable);
-    if (records.length === 0) {
-      const removedOnly = await this.deleteStaleEmbeddings(embeddingsTable, activeIds);
-      return { added: 0, updated: 0, removed: removedOnly, skipped: 0, failed: 0 };
-    }
-
-    const existingHashes = await this.getEmbeddingHashes(records.map((record) => record.id));
-    const toUpsert = records.filter((record) => existingHashes.get(record.id) !== record.contentHash);
-    const skipped = records.length - toUpsert.length;
-    const removed = await this.deleteStaleEmbeddings(embeddingsTable, activeIds);
-
-    let added = 0;
-    let updated = 0;
-    let failed = 0;
-    const batchSize = Number(this.config.get<string>("POSTGRES_EMBEDDING_BATCH_SIZE") || 25);
-
-    for (let i = 0; i < toUpsert.length; i += batchSize) {
-      const batch = toUpsert.slice(i, i + batchSize);
-      try {
-        await this.upsertEmbeddingBatch(embeddingsTable, batch);
-        for (const row of batch) {
-          if (existingHashes.has(row.id)) {
-            updated++;
-          } else {
-            added++;
-          }
-        }
-      } catch (error) {
-        failed += batch.length;
-        console.error("[POSTGRES] ❌ Embedding batch upsert failed:", error);
-      }
-    }
-
-    return { added, updated, removed, skipped, failed };
-  }
-
-  async getChunkEmbeddingHashes(ids: string[]): Promise<Map<string, string>> {
-    if (!this.isEnabled()) {
-      return new Map();
-    }
-    return this.getEmbeddingHashes(ids);
-  }
-
   async vectorSearchByDocIds(
     queryEmbedding: number[],
     docIds: string[],
@@ -374,61 +315,6 @@ export class PostgresRagService implements OnModuleDestroy {
 
   private vectorLiteral(embedding: number[]): string {
     return `[${embedding.join(",")}]`;
-  }
-
-  private async getEmbeddingHashes(ids: string[]): Promise<Map<string, string>> {
-    if (ids.length === 0) {
-      return new Map();
-    }
-
-    const embeddingsTable = this.tableRef(this.embeddingsTable);
-    const result = await this.pool.query(
-      `SELECT id, content_hash FROM ${embeddingsTable} WHERE id = ANY($1::text[])`,
-      [ids]
-    );
-
-    return new Map(result.rows.map((row: Record<string, any>) => [String(row.id), String(row.content_hash || "")]));
-  }
-
-  private async deleteStaleEmbeddings(embeddingsTable: string, activeIds: string[]): Promise<number> {
-    if (activeIds.length === 0) {
-      const result = await this.pool.query(`DELETE FROM ${embeddingsTable}`);
-      return result.rowCount || 0;
-    }
-
-    const result = await this.pool.query(
-      `DELETE FROM ${embeddingsTable} WHERE NOT (id = ANY($1::text[]))`,
-      [activeIds]
-    );
-    return result.rowCount || 0;
-  }
-
-  private async upsertEmbeddingBatch(
-    embeddingsTable: string,
-    rows: Array<{ id: string; contentHash: string; embedding: number[] }>
-  ): Promise<void> {
-    const values: Array<string> = [];
-    const placeholders: string[] = [];
-
-    for (let idx = 0; idx < rows.length; idx++) {
-      const row = rows[idx];
-      const offset = idx * 4;
-      values.push(row.id, this.vectorLiteral(row.embedding), row.contentHash, this.embeddingModel);
-      placeholders.push(`($${offset + 1}, $${offset + 2}::vector, $${offset + 3}, $${offset + 4}, NOW())`);
-    }
-
-    await this.pool.query(
-      `
-        INSERT INTO ${embeddingsTable} (id, embedding, content_hash, model, updated_at)
-        VALUES ${placeholders.join(",\n")}
-        ON CONFLICT (id) DO UPDATE SET
-          embedding = EXCLUDED.embedding,
-          content_hash = EXCLUDED.content_hash,
-          model = EXCLUDED.model,
-          updated_at = NOW()
-      `,
-      values
-    );
   }
 
   private toDoc(row: Record<string, any>): DomainDoc {

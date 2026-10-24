@@ -2,7 +2,6 @@ import { Injectable, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
-import { createHash } from "crypto";
 import { PostgresRagService } from "./postgres-rag.service";
 import { resolveRagEmbeddingModel } from "./rag-embedding-model";
 
@@ -14,8 +13,6 @@ type EmbeddingCache = {
   docCount: number;
   // Map: docId -> vector
   embeddings: Record<string, number[]>;
-  // Map: docId -> content signature
-  signatures?: Record<string, string>;
 };
 
 type QueryEmbeddingCache = {
@@ -42,13 +39,11 @@ export class VectorService implements OnModuleInit {
 
   // Memory caches
   private docEmbeddings: Map<string, number[]> = new Map(); // docId -> vector
-  private docSignatures: Map<string, string> = new Map(); // docId -> content hash
   private queryCache: Map<string, QueryEmbeddingCache> = new Map(); // query -> {embedding, cachedAt}
   private queryTTL = 5 * 60 * 1000; // 5 minutes
 
   // State tracking
   private isReady = false;
-  private isPreComputing = false;
 
   constructor(
     private readonly config: ConfigService,
@@ -79,186 +74,9 @@ export class VectorService implements OnModuleInit {
         );
       }
     } catch (error) {
-      console.warn(`[VECTOR] ⚠️ Cache load failed: ${error}. Will pre-compute on demand.`);
+      console.warn(`[VECTOR] ⚠️ Cache load failed: ${error}`);
       this.isReady = false;
     }
-  }
-
-  /**
-   * Pre-compute embeddings for all provided documents
-   * Call this method when cache is missing or invalid
-   */
-  async preComputeAllEmbeddings(docs: Array<{ id: string; text: string }>): Promise<void> {
-    await this.ensureEmbeddingsForDocuments(docs);
-  }
-
-  /**
-   * Incremental sync:
-   * - Add embeddings for new docs
-   * - Update embeddings when doc content changed
-   * - Remove stale embeddings not present in latest corpus
-   */
-  async ensureEmbeddingsForDocuments(
-    docs: Array<{ id: string; text: string }>
-  ): Promise<{ added: number; updated: number; removed: number; skipped: number; failed: number }> {
-    if (this.usePgvector && this.postgresRagService.isEnabled()) {
-      if (this.isPreComputing) {
-        console.warn("[VECTOR] ⚠️ Sync skipped: pre-compute in progress");
-        return { added: 0, updated: 0, removed: 0, skipped: docs.length, failed: 0 };
-      }
-
-      this.isPreComputing = true;
-      try {
-        const normalizedDocs = docs.map((doc) => {
-          const normalizedText = doc.text.substring(0, 2000).trim();
-          return {
-            id: doc.id,
-            text: normalizedText,
-            signature: this.computeSignature(normalizedText)
-          };
-        });
-
-        const existingHashes = await this.postgresRagService.getChunkEmbeddingHashes(
-          normalizedDocs.map((doc) => doc.id)
-        );
-
-        const toGenerate = normalizedDocs.filter((doc) => existingHashes.get(doc.id) !== doc.signature);
-        const skipped = normalizedDocs.length - toGenerate.length;
-
-        const upsertRows: Array<{ id: string; contentHash: string; embedding: number[] }> = [];
-        let failed = 0;
-        const batchSize = Number(this.config.get<string>("POSTGRES_EMBEDDING_BATCH_SIZE") || 25);
-
-        for (let i = 0; i < toGenerate.length; i += batchSize) {
-          const batch = toGenerate.slice(i, i + batchSize);
-          const results = await Promise.allSettled(
-            batch.map(async (item) => {
-              const embedding = await this.generateEmbedding(item.text);
-              return {
-                id: item.id,
-                contentHash: item.signature,
-                embedding
-              };
-            })
-          );
-
-          for (const result of results) {
-            if (result.status === "fulfilled") {
-              upsertRows.push(result.value);
-            } else {
-              failed++;
-              console.error("[VECTOR] ❌ Incremental upsert failed:", result.reason);
-            }
-          }
-        }
-
-        const dbStats = await this.postgresRagService.syncChunkEmbeddings(
-          upsertRows,
-          normalizedDocs.map((doc) => doc.id)
-        );
-
-        const stats = {
-          added: dbStats.added,
-          updated: dbStats.updated,
-          removed: dbStats.removed,
-          skipped,
-          failed: failed + dbStats.failed
-        };
-
-        this.isReady = true;
-        console.log(
-          `[VECTOR] ✅ Incremental sync done: +${stats.added} new, ~${stats.updated} updated, -${stats.removed} removed, ${stats.skipped} unchanged, ${stats.failed} failed`
-        );
-        return stats;
-      } catch (error) {
-        this.isReady = false;
-        console.error("[VECTOR] ❌ Pgvector sync failed:", error);
-        return { added: 0, updated: 0, removed: 0, skipped: 0, failed: docs.length };
-      } finally {
-        this.isPreComputing = false;
-      }
-    }
-
-    if (this.isPreComputing) {
-      console.warn("[VECTOR] ⚠️ Sync skipped: pre-compute in progress");
-      return { added: 0, updated: 0, removed: 0, skipped: docs.length, failed: 0 };
-    }
-
-    const incomingIds = new Set(docs.map((d) => d.id));
-    let removed = 0;
-
-    // Remove stale vectors that are no longer in corpus
-    for (const docId of Array.from(this.docEmbeddings.keys())) {
-      if (!incomingIds.has(docId)) {
-        this.docEmbeddings.delete(docId);
-        this.docSignatures.delete(docId);
-        removed++;
-      }
-    }
-
-    const toUpsert: Array<{ id: string; text: string; signature: string; isNew: boolean }> = [];
-    let skipped = 0;
-
-    for (const doc of docs) {
-      const normalizedText = doc.text.substring(0, 2000).trim();
-      const signature = this.computeSignature(normalizedText);
-      const existingSignature = this.docSignatures.get(doc.id);
-      const hasEmbedding = this.docEmbeddings.has(doc.id);
-
-      if (!hasEmbedding) {
-        toUpsert.push({ id: doc.id, text: normalizedText, signature, isNew: true });
-      } else if (!existingSignature) {
-        // Backfill signature for legacy caches without forcing costly full re-embedding.
-        this.docSignatures.set(doc.id, signature);
-        skipped++;
-      } else if (existingSignature !== signature) {
-        toUpsert.push({ id: doc.id, text: normalizedText, signature, isNew: false });
-      } else {
-        skipped++;
-      }
-    }
-
-    let added = 0;
-    let updated = 0;
-    let failed = 0;
-
-    if (toUpsert.length > 0) {
-      console.log(`[VECTOR] 🔄 Incremental sync: upserting ${toUpsert.length} embeddings...`);
-      const batchSize = 25;
-      for (let i = 0; i < toUpsert.length; i += batchSize) {
-        const batch = toUpsert.slice(i, i + batchSize);
-        const results = await Promise.allSettled(
-          batch.map(async (item) => {
-            const vector = await this.generateEmbedding(item.text);
-            this.docEmbeddings.set(item.id, vector);
-            this.docSignatures.set(item.id, item.signature);
-            return item;
-          })
-        );
-
-        for (const result of results) {
-          if (result.status === "fulfilled") {
-            if (result.value.isNew) {
-              added++;
-            } else {
-              updated++;
-            }
-          } else {
-            failed++;
-            console.error("[VECTOR] ❌ Incremental upsert failed:", result.reason);
-          }
-        }
-      }
-    }
-
-    await this.saveCacheToDisk();
-    this.isReady = this.docEmbeddings.size > 0;
-
-    console.log(
-      `[VECTOR] ✅ Incremental sync done: +${added} new, ~${updated} updated, -${removed} removed, ${skipped} unchanged, ${failed} failed`
-    );
-
-    return { added, updated, removed, skipped, failed };
   }
 
   /**
@@ -417,7 +235,6 @@ export class VectorService implements OnModuleInit {
       docEmbeddingsCount: this.usePgvector ? -1 : this.docEmbeddings.size,
       queryCacheSize: this.queryCache.size,
       isReady: this.isReady,
-      isPreComputing: this.isPreComputing,
       useChunking: this.useChunking,
       cacheFile: this.cacheFile,
       usePgvector: this.usePgvector
@@ -447,7 +264,6 @@ export class VectorService implements OnModuleInit {
    */
   async clearEmbeddings(): Promise<void> {
     this.docEmbeddings.clear();
-    this.docSignatures.clear();
     this.queryCache.clear();
     this.isReady = false;
     
@@ -556,38 +372,6 @@ export class VectorService implements OnModuleInit {
   }
 
   /**
-   * Save embeddings to disk cache
-   */
-  private async saveCacheToDisk(): Promise<void> {
-    try {
-      // Create cache directory if not exists
-      if (!fs.existsSync(this.cacheDir)) {
-        fs.mkdirSync(this.cacheDir, { recursive: true });
-      }
-
-      const cache: EmbeddingCache = {
-        version: "1.1",
-        model: this.model,
-        generatedAt: new Date().toISOString(),
-        vectorDim: this.embeddingDim,
-        docCount: this.docEmbeddings.size,
-        embeddings: Object.fromEntries(this.docEmbeddings),
-        signatures: Object.fromEntries(this.docSignatures)
-      };
-
-      const filePath = path.join(this.cacheDir, this.cacheFile);
-      fs.writeFileSync(filePath, JSON.stringify(cache, null, 2), "utf8");
-
-      console.log(
-        `[VECTOR] 💾 Saved ${this.docEmbeddings.size} embeddings to ${filePath}`
-      );
-    } catch (error) {
-      console.error("[VECTOR] ❌ Cache save error:", error);
-      throw error;
-    }
-  }
-
-  /**
    * Load embeddings from disk cache
    */
   private async loadCacheFromDisk(): Promise<void> {
@@ -618,7 +402,6 @@ export class VectorService implements OnModuleInit {
 
       // Load embeddings
       this.docEmbeddings = new Map(Object.entries(cache.embeddings));
-      this.docSignatures = new Map(Object.entries(cache.signatures || {}));
 
       console.log(
         `[VECTOR] 📂 Loaded ${this.docEmbeddings.size} embeddings from cache`
@@ -640,9 +423,5 @@ export class VectorService implements OnModuleInit {
 
       this.queryCache = new Map(entries);
     }
-  }
-
-  private computeSignature(text: string): string {
-    return createHash("sha256").update(text).digest("hex");
   }
 }

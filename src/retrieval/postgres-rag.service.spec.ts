@@ -50,13 +50,6 @@ describe("PostgresRagService", () => {
     expect(queryMock).toHaveBeenCalled();
   });
 
-  it("syncChunkEmbeddings handles empty records", async () => {
-    queryMock.mockResolvedValueOnce({ rowCount: 0 }); // delete stale
-    const service = new PostgresRagService(createConfig(true));
-    const out = await service.syncChunkEmbeddings([], []);
-    expect(out.failed).toBe(0);
-  });
-
   it("vector searches map rows", async () => {
     queryMock.mockResolvedValue({ rows: [{ id: "a", score: 0.9 }], rowCount: 1 });
     const service = new PostgresRagService(createConfig(true));

@@ -226,6 +226,8 @@ export class FridgeMealPlannerService {
       generatingSlots: plannedSlots,
       ctx,
       slotTargets: targetsBySlot,
+      // Task 6 replaces this with real retrieval
+      references: { text: "None.", used: [] },
     });
     if (allocationResult.source === "heuristic") {
       this.logger.warn(
@@ -308,6 +310,8 @@ export class FridgeMealPlannerService {
         generatingSlots: [mealSlot],
         ctx,
         slotTargets: targetsBySlot,
+        // Task 6 replaces this with real retrieval
+        references: { text: "None.", used: [] },
         alreadyAllocated,
         regenerateSlot: mealSlot,
       });

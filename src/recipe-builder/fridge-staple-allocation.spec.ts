@@ -6,6 +6,9 @@ import {
   validateAllocations,
 } from "./fridge-staple-allocation";
 import type { RecipeMealSlot } from "./dto/recipe.dto";
+import { buildLlmUserProfile, formatLlmUserBlock } from "../nutrition/llm-user-profile";
+import { sampleRecipeContext } from "../nutrition/__fixtures__/llm-context.fixture";
+import { ALLOCATION_PROMPTS } from "./constants/allocation-prompts";
 
 const staples = [
   { id: 1, foodName: "Egg", calories: 155, protein: 13, carbs: 1, fat: 11, sodium: 140, fiber: 0, servingSize: 100, servingUnit: "g" },
@@ -127,6 +130,7 @@ describe("FridgeStapleAllocationService", () => {
         ["breakfast", { calories: 500, protein: 25, carbs: 60, fat: 15 }],
         ["lunch", { calories: 700, protein: 35, carbs: 80, fat: 20 }],
       ]),
+      references: { text: "None.", used: [] },
     });
     expect(out.source).toBe("ai");
     expect(out.allocations.breakfast).toEqual([1, 2]);
@@ -144,9 +148,55 @@ describe("FridgeStapleAllocationService", () => {
         ["breakfast", { calories: 500, protein: 25, carbs: 60, fat: 15 }],
         ["lunch", { calories: 700, protein: 35, carbs: 80, fat: 20 }],
       ]),
+      references: { text: "None.", used: [] },
     });
     expect(out.source).toBe("heuristic");
     expect(out.allocations.breakfast?.length).toBeGreaterThanOrEqual(2);
     expect(out.allocations.lunch?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  describe("prompt content", () => {
+    async function capture(referencesText = "None.") {
+      const ollama = {
+        chat: jest.fn().mockResolvedValue(JSON.stringify({ allocations: { breakfast: [1, 2] } })),
+      };
+      const service = new FridgeStapleAllocationService(ollama as any);
+      const ctx = sampleRecipeContext();
+      await service.allocateStaplesForPlan({
+        staples: staples.slice(0, 4) as any[],
+        generatingSlots: ["breakfast"],
+        ctx,
+        slotTargets: new Map([["breakfast", { calories: 500, protein: 25, carbs: 60, fat: 15 }]]),
+        references: { text: referencesText, used: [] },
+      });
+      const messages = ollama.chat.mock.calls[0][0] as { role: string; content: string }[];
+      return {
+        ctx,
+        system: messages.find((m) => m.role === "system")!.content,
+        user: messages.find((m) => m.role === "user")!.content,
+      };
+    }
+
+    it("allocation prompt has the shared user block", async () => {
+      const { ctx, user } = await capture();
+      expect(user).toContain(formatLlmUserBlock(buildLlmUserProfile(ctx)));
+    });
+
+    it("allocation prompt has references", async () => {
+      const { user } = await capture("[1] Low sodium");
+      expect(user).toContain("[1] Low sodium");
+    });
+
+    it("allocation input is compact", async () => {
+      const { user } = await capture();
+      const after = user.split("Allocation input (JSON):\n")[1];
+      expect(after).not.toContain("\n  ");
+    });
+
+    it("system prompt mentions references", async () => {
+      const { system } = await capture();
+      expect(system).toContain("Reference");
+      expect(system).toBe(ALLOCATION_PROMPTS.SYSTEM);
+    });
   });
 });

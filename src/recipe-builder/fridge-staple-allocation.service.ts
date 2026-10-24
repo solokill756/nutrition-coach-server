@@ -2,6 +2,8 @@ import { Injectable, Logger } from "@nestjs/common";
 import { OllamaService } from "../ollama/ollama.service";
 import type { FoodNutritionEntity } from "../meal-planning/entities/food-nutrition.entity";
 import type { RecipeGenerationContext } from "../nutrition/user-context.service";
+import type { UserReferences } from "../retrieval/user-reference.service";
+import { buildLlmUserProfile, formatLlmUserBlock } from "../nutrition/llm-user-profile";
 import type { RecipeMealSlot } from "./dto/recipe.dto";
 import type { MealNutritionTarget } from "./recipe-nutrition-scoring";
 import {
@@ -21,6 +23,7 @@ export type AllocateStaplesParams = {
   slotTargets: Map<RecipeMealSlot, MealNutritionTarget>;
   alreadyAllocated?: StapleAllocationMap;
   regenerateSlot?: RecipeMealSlot;
+  references: UserReferences;
 };
 
 export type AllocateStaplesResult = {
@@ -36,7 +39,7 @@ export class FridgeStapleAllocationService {
   constructor(private readonly ollamaService: OllamaService) {}
 
   buildAllocationInput(params: AllocateStaplesParams) {
-    const { staples, generatingSlots, ctx, slotTargets, alreadyAllocated, regenerateSlot } = params;
+    const { staples, generatingSlots, slotTargets, alreadyAllocated, regenerateSlot } = params;
     const slotTargetsObj: Partial<Record<RecipeMealSlot, MealNutritionTarget>> = {};
     for (const slot of generatingSlots) {
       const t = slotTargets.get(slot);
@@ -57,11 +60,6 @@ export class FridgeStapleAllocationService {
         fiberG: Number(f.fiber ?? 0),
       })),
       slotTargets: slotTargetsObj,
-      profile: { dietType: ctx.profile.dietType, allergies: ctx.profile.allergies ?? [] },
-      healthDetailed: ctx.healthDetailed,
-      conditionRelatedThresholds: ctx.conditionRelatedThresholds,
-      todayIntake: ctx.todayIntake,
-      remainingToday: ctx.remaining,
       ...(alreadyAllocated ? { alreadyAllocated } : {}),
       ...(regenerateSlot ? { regenerateSlot } : {}),
     };
@@ -84,7 +82,15 @@ export class FridgeStapleAllocationService {
       const input = this.buildAllocationInput(params);
       const raw = await this.ollamaService.chat([
         { role: "system", content: ALLOCATION_SYSTEM_PROMPT },
-        { role: "user", content: JSON.stringify(input, null, 2) },
+        {
+          role: "user",
+          content: [
+            formatLlmUserBlock(buildLlmUserProfile(params.ctx)),
+            `Allocation input (JSON):\n${JSON.stringify(input)}`,
+            "Reference: numbered excerpts from the nutrition knowledge base.",
+            params.references.text,
+          ].join("\n\n"),
+        },
       ]);
       const allocations = parseAllocationJson(raw);
       if (!allocations) {

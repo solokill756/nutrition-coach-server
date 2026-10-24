@@ -12,6 +12,12 @@ describe("findAllergens", () => {
     ["Peanut butter", ["Peanuts"], ["Peanuts"]],
     ["Trứng vịt", ["Trứng"], ["Trứng"]],
     ["Thịt heo", ["Eggs", "Fish"], []],
+    ["Nuts, almonds", ["Tree nuts"], ["Tree nuts"]],
+    ["Prawns", ["Shellfish"], ["Shellfish"]],
+    ["Soybeans, mature seeds", ["Soy"], ["Soy"]],
+    ["Ice creams, vanilla", ["Milk or lactose"], ["Milk or lactose"]],
+    ["Nước mắm", ["Fish"], ["Fish"]],
+    ["Bánh mì", ["Wheat or gluten"], ["Wheat or gluten"]],
   ])("%s with %j -> %j", (food, allergies, expected) => {
     expect(findAllergens(food, allergies)).toEqual(expected);
   });

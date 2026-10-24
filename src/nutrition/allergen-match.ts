@@ -2,12 +2,12 @@ import { allergyLabelToKey } from "../rag-ingest/rag-taxonomy";
 
 export const ALLERGEN_KEYWORDS: Record<string, string[]> = {
   eggs: ["trứng", "egg", "eggs", "mayonnaise"],
-  milk_lactose: ["sữa", "phô mai", "bơ sữa", "kem sữa", "milk", "cheese", "yogurt", "butter", "cream", "whey"],
+  milk_lactose: ["sữa", "phô mai", "bơ sữa", "kem sữa", "milk", "cheese", "yogurt", "butter", "cream", "ice cream", "whey"],
   peanuts: ["đậu phộng", "lạc", "peanut", "peanuts"],
   tree_nuts: ["hạnh nhân", "óc chó", "hạt điều", "hạt dẻ", "hồ đào", "almond", "walnut", "cashew", "pecan", "hazelnut", "pistachio"],
   fish: ["cá", "fish", "salmon", "tuna", "cod", "nước mắm", "fish sauce"],
   shellfish: ["tôm", "cua", "ghẹ", "sò", "hàu", "nghêu", "mực", "shrimp", "prawn", "crab", "lobster", "oyster", "clam", "mussel", "squid"],
-  soy: ["đậu nành", "đậu hũ", "đậu phụ", "tàu hũ", "nước tương", "xì dầu", "soy", "tofu", "edamame"],
+  soy: ["đậu nành", "đậu hũ", "đậu phụ", "tàu hũ", "nước tương", "xì dầu", "soy", "soybean", "tofu", "edamame"],
   wheat_gluten: ["lúa mì", "bột mì", "mì", "bánh mì", "wheat", "flour", "bread", "pasta", "gluten"],
   sesame: ["mè", "vừng", "sesame", "tahini"],
 };
@@ -20,10 +20,17 @@ function tokenize(text: string): string[] {
     .filter(Boolean);
 }
 
+function tokenMatches(foodToken: string, keywordToken: string, allowPlural: boolean): boolean {
+  if (foodToken === keywordToken) return true;
+  return allowPlural && (foodToken === keywordToken + "s" || foodToken === keywordToken + "es");
+}
+
 function containsSequence(haystack: string[], needle: string[]): boolean {
   if (needle.length === 0 || needle.length > haystack.length) return false;
+  // English plural tolerance only for single-token ASCII-letter keywords.
+  const allowPlural = needle.length === 1 && /^[a-z]+$/.test(needle[0]);
   for (let i = 0; i + needle.length <= haystack.length; i++) {
-    if (needle.every((token, j) => haystack[i + j] === token)) return true;
+    if (needle.every((token, j) => tokenMatches(haystack[i + j], token, allowPlural))) return true;
   }
   return false;
 }

@@ -17,11 +17,17 @@ function tableWidth(t: Table): number {
   return Math.max(0, ...t.header.map((r) => r.length), ...t.rows.map((r) => r.length));
 }
 
+/** True when `block` is on a later page than `previous`. Without page numbers (e.g. a web page) there is no page break. */
+function startsOnLaterPage(block: Table, previous: Table): boolean {
+  return block.page !== undefined && previous.page !== undefined && block.page > previous.page;
+}
+
 /**
  * Repairs table headers that Docling gets wrong, so numbers are never labelled with other numbers.
  *
  * 1. Continuation: a table that directly follows another table (no heading or paragraph between
- *    them), has the same column count and no caption is the rest of that table after a page break.
+ *    them), starts on a later page, has the same column count and no caption is the rest of that
+ *    table after a page break. Tables without a page number are never continuations.
  *    It inherits the previous table's caption and header; the rows Docling flagged as its header
  *    (the first rows on the new page) become data rows.
  * 2. Otherwise, the first header row that is data-like ({@link isDataLikeRow}) and every header row
@@ -43,7 +49,12 @@ export function repairTableHeaders(blocks: ExtractedBlock[]): ExtractedBlock[] {
       continue;
     }
     let fixed: Table;
-    if (previous && !block.caption && tableWidth(block) === tableWidth(previous)) {
+    if (
+      previous &&
+      startsOnLaterPage(block, previous) &&
+      !block.caption &&
+      tableWidth(block) === tableWidth(previous)
+    ) {
       fixed = {
         kind: 'table',
         ...(previous.caption ? { caption: previous.caption } : {}),

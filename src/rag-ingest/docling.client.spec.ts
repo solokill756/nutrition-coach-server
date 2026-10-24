@@ -299,14 +299,14 @@ describe('mapDoclingDocument tolerance', () => {
 
 describe('mapDoclingDocument table header repair', () => {
   const cell = (text: string, header = false) => ({ text, column_header: header });
-  const tableNode = (rows: ReturnType<typeof cell>[][], captions: unknown[] = []) => ({
+  const tableNode = (rows: ReturnType<typeof cell>[][], captions: unknown[] = [], pageNo = 1) => ({
     label: 'table',
     captions,
-    prov: [{ page_no: 1 }],
+    prov: [{ page_no: pageNo }],
     data: { grid: rows },
   });
 
-  it('treats a caption-less same-width table right after another table as its continuation', () => {
+  it('treats a caption-less same-width table right after another table, on the next page, as its continuation', () => {
     const json = {
       body: { children: [{ $ref: '#/tables/0' }, { $ref: '#/tables/1' }] },
       texts: [{ label: 'caption', text: 'Bảng 2: Canxi' }],
@@ -318,10 +318,14 @@ describe('mapDoclingDocument table header repair', () => {
           ],
           [{ $ref: '#/texts/0' }],
         ),
-        tableNode([
-          [cell('≥70 tuổi', true), cell('1000', true)],
-          [cell('Phụ nữ có thai'), cell('1200')],
-        ]),
+        tableNode(
+          [
+            [cell('≥70 tuổi', true), cell('1000', true)],
+            [cell('Phụ nữ có thai'), cell('1200')],
+          ],
+          [],
+          2,
+        ),
       ],
     };
     const doc = mapDoclingDocument(json);

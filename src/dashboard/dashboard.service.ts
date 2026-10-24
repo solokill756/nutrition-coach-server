@@ -342,7 +342,7 @@ export class DashboardService implements OnModuleDestroy {
       }),
       this.goalRepo.findOne({
         where: { userId, isActive: true },
-        order: { startDate: "DESC" },
+        order: { startDate: "DESC", id: "DESC" },
       }),
       this.diaryService.getDay(userId, dateKey, tzOffsetMinutes),
       this.aggregateExercise(userId, start, end),

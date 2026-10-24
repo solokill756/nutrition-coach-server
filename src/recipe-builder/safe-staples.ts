@@ -74,7 +74,8 @@ export function filterSafeStaples(
         unchecked.push({ foodId: food.id, nutrient: limit.nutrient, reason: "food has no value for this nutrient" });
         continue;
       }
-      if (!overLimitReason && value >= CONDITION_MAX_SERVING_SHARE * limit.max) {
+      const overLimit = limit.max === 0 ? value > 0 : value >= CONDITION_MAX_SERVING_SHARE * limit.max;
+      if (!overLimitReason && overLimit) {
         overLimitReason = `Removed "${food.foodName}": one serving has ${Math.round(value)} ${limit.unit} of ${limit.nutrient}, at least ${Math.round(CONDITION_MAX_SERVING_SHARE * 100)}% of your daily limit of ${Math.round(limit.max)} ${limit.unit}.`;
       }
     }

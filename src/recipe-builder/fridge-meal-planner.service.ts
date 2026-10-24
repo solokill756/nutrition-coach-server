@@ -458,7 +458,7 @@ export class FridgeMealPlannerService {
         },
       },
       userId,
-      0,
+      options.tzOffsetMinutes ?? 0,
       { references: options.references },
     );
     const generationWarnings = [...options.removedWarnings, ...(generation.generationWarnings ?? [])];

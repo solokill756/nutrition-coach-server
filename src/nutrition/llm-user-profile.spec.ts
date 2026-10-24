@@ -10,6 +10,17 @@ describe("llm-user-profile", () => {
     expect(p.healthConditions).toEqual(["hypertension"]);
   });
 
+  it("excludes calories thresholds from nutrient limits", () => {
+    const p = buildLlmUserProfile(sampleRecipeContext({
+      thresholds: [
+        { nutrient: "calories", maxAmount: 1980, minAmount: 1620, unit: "kcal" },
+        { nutrient: "sodium", maxAmount: 2000, minAmount: null, unit: "mg" },
+      ],
+    }));
+    expect(p.nutrientLimits.some((s) => /calories/i.test(s))).toBe(false);
+    expect(p.nutrientLimits.some((s) => s.startsWith("sodium"))).toBe(true);
+  });
+
   it("dedupes nutrient limits", () => {
     const p = buildLlmUserProfile(sampleRecipeContext());
     expect(p.nutrientLimits.filter((s) => s.startsWith("sodium"))).toHaveLength(1);

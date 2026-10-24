@@ -308,6 +308,14 @@ describe("FridgeMealPlannerService safety filtering and references", () => {
     for (const c of calls) expect(c[3].references).toBe(first.references);
   });
 
+  it("passes tzOffsetMinutes to generateRecipe", async () => {
+    const s = createService();
+    await s.service.generateDailyPlan(1, "2026-06-11", {}, 420);
+    const calls = s.recipeBuilderService.generateRecipe.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    for (const c of calls) expect(c[2]).toBe(420);
+  });
+
   it("never allocates allergen staples", async () => {
     const s = createService();
     eggAllergic(s);

@@ -2,13 +2,13 @@ import { allergyLabelToKey } from "../rag-ingest/rag-taxonomy";
 
 export const ALLERGEN_KEYWORDS: Record<string, string[]> = {
   eggs: ["trứng", "egg", "eggs", "mayonnaise"],
-  milk_lactose: ["sữa", "phô mai", "bơ sữa", "kem sữa", "milk", "cheese", "yogurt", "butter", "cream", "ice cream", "whey"],
+  milk_lactose: ["sữa", "phô mai", "bơ sữa", "kem sữa", "milk", "cheese", "yogurt", "butter", "cream", "ice cream", "whey", "lactose", "buttermilk", "ghee", "casein", "kem"],
   peanuts: ["đậu phộng", "lạc", "peanut", "peanuts"],
-  tree_nuts: ["hạnh nhân", "óc chó", "hạt điều", "hạt dẻ", "hồ đào", "almond", "walnut", "cashew", "pecan", "hazelnut", "pistachio"],
-  fish: ["cá", "fish", "salmon", "tuna", "cod", "nước mắm", "fish sauce"],
-  shellfish: ["tôm", "cua", "ghẹ", "sò", "hàu", "nghêu", "mực", "shrimp", "prawn", "crab", "lobster", "oyster", "clam", "mussel", "squid"],
-  soy: ["đậu nành", "đậu hũ", "đậu phụ", "tàu hũ", "nước tương", "xì dầu", "soy", "soybean", "tofu", "edamame"],
-  wheat_gluten: ["lúa mì", "bột mì", "mì", "bánh mì", "wheat", "flour", "bread", "pasta", "gluten"],
+  tree_nuts: ["hạnh nhân", "óc chó", "hạt điều", "hạt dẻ", "hồ đào", "almond", "walnut", "cashew", "pecan", "hazelnut", "pistachio", "nut", "macadamia", "brazil", "hạt mắc ca"],
+  fish: ["cá", "fish", "salmon", "tuna", "cod", "nước mắm", "fish sauce", "sardine", "mackerel", "anchovy", "tilapia", "catfish", "trout"],
+  shellfish: ["tôm", "cua", "ghẹ", "sò", "hàu", "nghêu", "mực", "shrimp", "prawn", "crab", "lobster", "oyster", "clam", "mussel", "squid", "scallop", "mollusk", "crustacean", "crayfish"],
+  soy: ["đậu nành", "đậu hũ", "đậu phụ", "tàu hũ", "nước tương", "xì dầu", "soy", "soybean", "tofu", "edamame", "soymilk", "miso", "tempeh"],
+  wheat_gluten: ["lúa mì", "bột mì", "mì", "bánh mì", "wheat", "flour", "bread", "pasta", "gluten", "barley", "rye", "spaghetti", "macaroni", "noodle", "couscous", "cracker"],
   sesame: ["mè", "vừng", "sesame", "tahini"],
 };
 

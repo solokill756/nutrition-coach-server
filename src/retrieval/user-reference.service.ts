@@ -26,7 +26,7 @@ export class UserReferenceService {
     try {
       const { question, hints } = buildPersonalizedRagQuery(input);
       const topK = Number(this.config.get("TOP_K")) || RAG_PROMPT_TOP_K_DEFAULT;
-      this.logger.log(
+      this.logger.debug(
         `[RAG] Query purpose=${input.purpose} hints=${JSON.stringify(hints)} query="${question}"`,
       );
       const contexts = await this.retrieval.retrieve(question, topK, hints);
@@ -34,7 +34,6 @@ export class UserReferenceService {
       this.logger.log(
         `[RAG] RetrievalService.retrieve purpose=${input.purpose} intent=${hints.intent ?? "general"} ` +
           `hasConditionContext=${hints.hasConditionContext ?? false} ` +
-          `query="${question.slice(0, 160)}${question.length > 160 ? "…" : ""}" ` +
           `rawHits=${contexts.length} usedAfterScore>=${RAG_CONFIDENCE_THRESHOLD}=${filtered.length} ` +
           `topScore=${contexts[0]?.score != null ? contexts[0].score.toFixed(3) : "n/a"}`,
       );

@@ -27,6 +27,13 @@ describe("filterSafeStaples", () => {
     expect(r.safe.map((f) => f.id)).toEqual([3]);
   });
 
+  it("max 0 removes only foods with a positive amount", () => {
+    const input = { ...base, conditionRelatedThresholds: [th("cholesterol", 0, null, "mg")] };
+    const r = filterSafeStaples([food({ id: 6, cholesterol: 0 }), food({ id: 7, cholesterol: 5 })], input, units);
+    expect(r.safe.map((f) => f.id)).toEqual([6]);
+    expect(r.removed.map((f) => f.foodId)).toEqual([7]);
+  });
+
   it("ignores min-only thresholds", () => {
     const r = filterSafeStaples([food({ id: 4, potassium: 0 })], { ...base, conditionRelatedThresholds: [th("potassium", null, 3500, "mg")] }, units);
     expect(r.safe.map((f) => f.id)).toEqual([4]);

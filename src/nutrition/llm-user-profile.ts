@@ -24,6 +24,7 @@ export function buildLlmUserProfile(ctx: RecipeGenerationContext): LlmUserProfil
   const nutrientLimits = [
     ...new Set(
       [...ctx.thresholds, ...ctx.conditionRelatedThresholds]
+        .filter((t) => t.nutrient.trim().replace(/[_\s-]/g, "").toLowerCase() !== "calories")
         .map(formatThresholdMinMax)
         .filter(Boolean),
     ),

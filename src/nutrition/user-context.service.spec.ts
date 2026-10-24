@@ -1,5 +1,6 @@
 import { Between } from "typeorm";
 import { UserContextService } from "./user-context.service";
+import { DashboardEventBus } from "../dashboard/dashboard-event-bus";
 import { calendarDayBounds } from "../common/date/calendar-day-bounds";
 
 describe("UserContextService", () => {
@@ -28,9 +29,30 @@ describe("UserContextService", () => {
     const weightRepo: any = mkRepo();
     weightRepo.findOne.mockResolvedValue(null);
     const mockConfig: any = { get: jest.fn() };
-    const service = new UserContextService(goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, weightRepo, mockApplier, mockUnits, mockConfig);
-    return { service, goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, weightRepo, mockApplier };
+    const bus = new DashboardEventBus();
+    const service = new UserContextService(goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, weightRepo, mockApplier, mockUnits, mockConfig, bus);
+    return { service, bus, goalRepo, healthRepo, thresholdRepo, logRepo, userRepo, foodRepo, recipeRepo, ruleRepo, weightRepo, mockApplier };
   }
+
+  it("diary-changed event clears the static cache", async () => {
+    const { service, userRepo, bus } = setup();
+    userRepo.findOne.mockResolvedValue({ id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
+    await service.assembleContext(1);
+    await service.assembleContext(1);
+    expect(userRepo.findOne).toHaveBeenCalledTimes(1);
+    bus.emitDiaryChanged(1, "2026-10-24");
+    await service.assembleContext(1);
+    expect(userRepo.findOne).toHaveBeenCalledTimes(2);
+  });
+
+  it("other users' cache is kept", async () => {
+    const { service, userRepo, bus } = setup();
+    userRepo.findOne.mockResolvedValue({ id: 1, age: 20, sex: "male", weight: 70, goalWeight: 68, height: 170, dietType: null, allergies: [], fitnessLevel: "active" });
+    await service.assembleContext(1);
+    bus.emitDiaryChanged(2, "2026-10-24");
+    await service.assembleContext(1);
+    expect(userRepo.findOne).toHaveBeenCalledTimes(1);
+  });
 
   it("assembleRecipeGenerationContext validates dateKey", async () => {
     const { service } = setup();

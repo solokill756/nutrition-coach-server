@@ -35,7 +35,9 @@ export class UsersController {
     @Req() req: Request & { user: { userId: number } },
     @Body() dto: UpdateProfileDto
   ) {
-    return this.authService.patchProfile(req.user.userId, dto);
+    const result = await this.authService.patchProfile(req.user.userId, dto);
+    this.dashboardEventBus.emitDiaryChanged(req.user.userId, resolveClientDateKey(undefined, 0));
+    return result;
   }
 
   @UseGuards(JwtAuthGuard)

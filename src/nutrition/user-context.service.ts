@@ -1,4 +1,4 @@
-import { Injectable, Logger } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { InjectRepository } from "@nestjs/typeorm";
 import { Repository, MoreThanOrEqual, In, Between } from "typeorm";
@@ -18,6 +18,7 @@ import { ConditionNutrientUnitService } from "./condition-nutrient-unit.service"
 import { buildConditionRelatedThresholds } from "./condition-related-thresholds";
 import { calendarDayBounds, localDateKeyNow } from "../common/date/calendar-day-bounds";
 import { sumDayIntake, type DayIntakeTotals } from "./day-intake-totals";
+import { DashboardEventBus, type DiaryChangedListener } from "../dashboard/dashboard-event-bus";
 import { resolveMealSplits, type MealSplitsFraction } from "./meal-splits";
 
 export type RecipeGenerationMealSlot = "breakfast" | "lunch" | "dinner" | "snack";
@@ -131,7 +132,7 @@ export interface UserMealContext {
 }
 
 @Injectable()
-export class UserContextService {
+export class UserContextService implements OnModuleDestroy {
   private readonly logger = new Logger(UserContextService.name);
   private readonly logHistoryDays: number;
 
@@ -141,6 +142,8 @@ export class UserContextService {
   private readonly pendingLoads = new Map<number, Promise<UserStaticContext>>();
   /** Simple LRU order tracking (array of userIds, most-recently-used at end). */
   private readonly lruOrder: number[] = [];
+  /** Profile/health/goal changes emit a diary-changed event; drop that user's cached context. */
+  private readonly diaryChangedListener: DiaryChangedListener = (e) => this.invalidateUserCache(e.userId);
 
   constructor(
     @InjectRepository(UserGoalEntity)
@@ -164,8 +167,14 @@ export class UserContextService {
     private readonly applier: ConditionNutrientRuleApplierService,
     private readonly units: ConditionNutrientUnitService,
     config: ConfigService,
+    private readonly eventBus: DashboardEventBus,
   ) {
+    this.eventBus.onDiaryChanged(this.diaryChangedListener);
     this.logHistoryDays = Number(config.get<number>("USV_LOG_HISTORY_DAYS")) || DEFAULT_LOG_HISTORY_DAYS;
+  }
+
+  onModuleDestroy(): void {
+    this.eventBus.removeListener(this.diaryChangedListener);
   }
 
   /** Invalidate cached static context for a user (call after profile/goal/health updates). */

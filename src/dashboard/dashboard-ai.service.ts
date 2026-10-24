@@ -60,8 +60,30 @@ export class DashboardAiService {
       waterTargetMl: ctx.water.targetMl,
       workoutCount: ctx.exercise.workoutCount,
     });
+    // One budget for retrieval and the LLM call: past it the fallback is returned right away.
+    const startedAt = Date.now();
+    let usedFallback = false;
+    try {
+      const raw = await this.withTimeout(this.requestSuggestion(ctx), AI_SUGGESTION_TIMEOUT_MS);
+      const parsed = this.parseAiSuggestion(raw);
+      usedFallback = parsed == null;
+      return parsed ?? fallback;
+    } catch (error) {
+      usedFallback = true;
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`AI suggestion fallback: ${message}`);
+      return fallback;
+    } finally {
+      this.logger.log(`[DASHBOARD-AI] latencyMs=${Date.now() - startedAt} fallback=${usedFallback}`);
+    }
+  }
+
+  /** Retrieval plus the LLM call; not cancelled when the budget runs out, its result is just ignored. */
+  private async requestSuggestion(ctx: DashboardAiSuggestionContext): Promise<string> {
+    // No LLM rerank: it took 4-16 s of the budget for a one-sentence suggestion (#37).
     const references = await this.userReferenceService.retrieve(
       ragQueryInputFromContext(ctx.userContext, "dashboard_suggestion"),
+      { skipCrossEncoder: true },
     );
     const systemPrompt = [
       "You are a concise nutrition coach for a daily dashboard.",
@@ -94,27 +116,10 @@ export class DashboardAiService {
       `Retrieved reference snippets:\n${references.text}`,
     ].join("\n\n");
 
-    const startedAt = Date.now();
-    let usedFallback = false;
-    try {
-      const raw = await this.withTimeout(
-        this.ollamaService.chat([
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ]),
-        AI_SUGGESTION_TIMEOUT_MS,
-      );
-      const parsed = this.parseAiSuggestion(raw);
-      usedFallback = parsed == null;
-      return parsed ?? fallback;
-    } catch (error) {
-      usedFallback = true;
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`AI suggestion fallback: ${message}`);
-      return fallback;
-    } finally {
-      this.logger.log(`[DASHBOARD-AI] latencyMs=${Date.now() - startedAt} fallback=${usedFallback}`);
-    }
+    return this.ollamaService.chat([
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ]);
   }
 
   buildFallbackSuggestion(ctx: {

@@ -51,6 +51,15 @@ describe("UserReferenceService", () => {
     expect(out.used.length).toBeGreaterThan(0);
   });
 
+  it("keeps the LLM rerank unless the caller skips it", async () => {
+    const retrieve = jest.fn().mockResolvedValue([]);
+    const service = build(undefined, retrieve);
+    await service.retrieve(input);
+    await service.retrieve(input, { skipCrossEncoder: true });
+    expect(retrieve.mock.calls[0][2].skipCrossEncoder).toBeUndefined();
+    expect(retrieve.mock.calls[1][2].skipCrossEncoder).toBe(true);
+  });
+
   it("returns None when retrieval fails", async () => {
     const retrieve = jest.fn().mockRejectedValue(new Error("boom"));
     const out = await build(undefined, retrieve).retrieve(input);

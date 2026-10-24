@@ -221,6 +221,32 @@ describe("RetrievalService hot rebuild", () => {
   });
 });
 
+describe("RetrievalService cross-encoder shortlist", () => {
+  beforeEach(() => {
+    jest.spyOn(console, "log").mockImplementation(() => undefined);
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
+  // #37: the shortlist was the first candidates in index order, not the best-ranked ones.
+  it("sends the best-ranked candidates to the reranker, not the first ones in the index", async () => {
+    const chat = jest.fn().mockResolvedValue("[]");
+    const service = new RetrievalService(config(), vectorService(), {} as PostgresRagService, { chat } as unknown as OllamaService);
+    const weak = Array.from({ length: 8 }, (_, i) => chunk(`weak${i}`, `General advice about meals and water. Some salt. Item ${i}.`));
+    const strong = Array.from({ length: 4 }, (_, i) => chunk(`strong${i}`, `Salt and sodium: cut salt, choose low sodium salt-free foods, limit salt ${i}.`));
+    (service as any).index = (service as any).buildIndex([...weak, ...strong]);
+    (service as any).isIndexReady = true;
+    (service as any).hybridMode = "bm25-only";
+
+    await service.retrieve("salt sodium", 5, {});
+
+    const prompt: string = chat.mock.calls[0][0][1].content;
+    const sent: { id: string }[] = JSON.parse(prompt.slice(prompt.indexOf("Candidates:") + "Candidates:".length).trim());
+    expect(sent).toHaveLength(6);
+    expect(sent.slice(0, 4).map((c) => c.id).sort()).toEqual(["strong0", "strong1", "strong2", "strong3"]);
+  });
+});
+
 describe("RetrievalService entity filters", () => {
   beforeEach(() => {
     jest.spyOn(console, "log").mockImplementation(() => undefined);

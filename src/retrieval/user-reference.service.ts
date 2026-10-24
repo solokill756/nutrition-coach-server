@@ -22,9 +22,15 @@ export class UserReferenceService {
     private readonly config: ConfigService,
   ) {}
 
-  async retrieve(input: PersonalizedRagQueryInput): Promise<UserReferences> {
+  /** `skipCrossEncoder` drops the LLM rerank (a few seconds) for callers on a tight time budget. */
+  async retrieve(
+    input: PersonalizedRagQueryInput,
+    options: { skipCrossEncoder?: boolean } = {},
+  ): Promise<UserReferences> {
     try {
-      const { question, hints } = buildPersonalizedRagQuery(input);
+      const query = buildPersonalizedRagQuery(input);
+      const question = query.question;
+      const hints = options.skipCrossEncoder ? { ...query.hints, skipCrossEncoder: true } : query.hints;
       const topK = Number(this.config.get("TOP_K")) || RAG_PROMPT_TOP_K_DEFAULT;
       this.logger.debug(
         `[RAG] Query purpose=${input.purpose} hints=${JSON.stringify(hints)} query="${question}"`,

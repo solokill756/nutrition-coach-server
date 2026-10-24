@@ -156,7 +156,7 @@ export class RagIngestPipeline {
     const tagResults: Awaited<ReturnType<TaggingService["tagAll"]>>["results"] = [];
     if (toProcess.length > 0) {
       const tagged = await this.tagging.tagAll(
-        toProcess.map((c) => c.content),
+        toProcess.map((c) => ({ text: c.content, documentTitle: extracted.title, headingPath: c.headingPath })),
         (done, total) => reportLater("tagging", scale(50, 80, done, total))
       );
       await pending;

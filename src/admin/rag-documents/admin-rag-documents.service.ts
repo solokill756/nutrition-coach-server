@@ -272,9 +272,14 @@ export class AdminRagDocumentsService {
     const current = await this.store.getChunk(id);
     if (!current) throw new AdminRagException("RAG_CHUNK_NOT_FOUND", HttpStatus.NOT_FOUND);
 
+    const doc = await this.store.getDocument(current.docId);
     let result: Awaited<ReturnType<TaggingService["tagOne"]>>;
     try {
-      result = await this.tagging.tagOne(current.content);
+      result = await this.tagging.tagOne({
+        text: current.content,
+        documentTitle: doc?.title ?? current.title,
+        headingPath: current.headingPath ?? "",
+      });
     } catch (err) {
       this.logger.warn(`retag of chunk ${id} failed: ${describeError(err)}`);
       throw new AdminRagException("RAG_TAGGING_FAILED", HttpStatus.BAD_GATEWAY);

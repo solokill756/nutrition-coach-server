@@ -1,7 +1,7 @@
 import { Injectable } from "@nestjs/common";
 import { OllamaService } from "../../ollama/ollama.service";
 import { RAG_DOMAINS, RAG_TAXONOMY, isRagDomain, sanitizeTags, type RagDomain, type RagTagGroup } from "../rag-taxonomy";
-import type { RagTagger, TagResult } from "./tagger.types";
+import { tagInputText, type RagTagger, type TagInput, type TagResult } from "./tagger.types";
 
 const TEXT_MAX_CHARS = 6000;
 
@@ -17,10 +17,10 @@ export class GeminiTagger implements RagTagger {
 
   constructor(private readonly ollama: OllamaService) {}
 
-  async tag(text: string): Promise<TagResult> {
+  async tag(input: TagInput): Promise<TagResult> {
     const raw = await this.ollama.chat([
       { role: "system", content: this.systemPrompt() },
-      { role: "user", content: text.slice(0, TEXT_MAX_CHARS) },
+      { role: "user", content: tagInputText(input, TEXT_MAX_CHARS) },
     ]);
 
     let parsed: unknown;
@@ -54,6 +54,8 @@ export class GeminiTagger implements RagTagger {
       `goals (valid keys): ${keys("goals")}`,
       `nutrients (valid keys): ${keys("nutrients")}`,
       "Only include keys the passage is clearly about. Use only the valid keys above; use [] when none apply.",
+      'The message may start with a "Document title:" and a "Section:" line before the passage. The document title and section heading are context only:',
+      "use them to tell which condition, group or goal the passage is about (a table often names it only in its heading), but tag the passage, never the title alone.",
     ].join("\n");
   }
 }

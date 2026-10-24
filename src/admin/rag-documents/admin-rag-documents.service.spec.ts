@@ -409,8 +409,10 @@ describe("AdminRagDocumentsService", () => {
 
     it("retag overwrites tags and clears the error without touching isManuallyEdited", async () => {
       const t = setup();
+      t.store.getDocument.mockResolvedValue(doc({ title: "Current doc title" }));
       await t.service.retag("d1-c1");
-      expect(t.tagging.tagOne).toHaveBeenCalledWith("hello");
+      expect(t.store.getDocument).toHaveBeenCalledWith("d1");
+      expect(t.tagging.tagOne).toHaveBeenCalledWith({ text: "hello", documentTitle: "Current doc title", headingPath: "H1 > H2" });
       const patch = t.store.updateChunk.mock.calls[0][1];
       expect(patch).toEqual({
         domain: "safety",

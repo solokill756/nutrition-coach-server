@@ -255,6 +255,11 @@ describe("RagIngestPipeline", () => {
     });
     await s.pipeline.run(job);
     expect(s.tagging.tagAll.mock.calls[0][0]).toHaveLength(2);
+    expect(s.tagging.tagAll.mock.calls[0][0][0]).toEqual({
+      text: expect.any(String),
+      documentTitle: "Extracted Title",
+      headingPath: expect.any(String),
+    });
     expect(s.vector.embedDocuments.mock.calls[0][0]).toHaveLength(2);
     const input = s.store.applyIngestResult.mock.calls[0][1];
     expect(input.chunks.map((c: any) => c.chunkKey)).toEqual(["k1", "k2"]);

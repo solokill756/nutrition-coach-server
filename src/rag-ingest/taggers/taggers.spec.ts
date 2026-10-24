@@ -5,7 +5,7 @@ import { emptyTags } from "../rag-taxonomy";
 import { JevTagger } from "./jev-tagger";
 import { GeminiTagger } from "./gemini-tagger";
 import { TaggingService } from "./tagging.service";
-import type { TagResult } from "./tagger.types";
+import type { TagInput, TagResult } from "./tagger.types";
 
 jest.mock("axios");
 const axiosPost = axios.post as jest.Mock;
@@ -36,6 +36,16 @@ const result = (tagger: "jev" | "gemini", domain: TagResult["domain"] = "guideli
   tagger,
 });
 
+const input = (text: string, documentTitle = "", headingPath = ""): TagInput => ({ text, documentTitle, headingPath });
+const inputs = (...texts: string[]): TagInput[] => texts.map((t) => input(t));
+
+// A table chunk from the NIN guide: the numbers never name the condition, only the heading does.
+const diabetesTable = input(
+  "Nhóm tuổi: 19-50 tuổi; Năng lượng: 1800 kcal; Glucid: 50-55%",
+  "Hướng dẫn chế độ ăn",
+  "Chế độ ăn bệnh lý › Người đái tháo đường",
+);
+
 describe("JevTagger", () => {
   let tagger: JevTagger;
   beforeEach(() => {
@@ -46,7 +56,7 @@ describe("JevTagger", () => {
 
   it("builds one choice + one noul per taxonomy tag and applies the threshold", async () => {
     axiosPost.mockResolvedValue(okBody);
-    const r = await tagger.tag("Người bệnh tiểu đường… dị ứng tôm cua…");
+    const r = await tagger.tag(input("Người bệnh tiểu đường… dị ứng tôm cua…"));
     const [url, body, opts] = axiosPost.mock.calls[0];
     expect(url).toBe("https://api.typesafe.ai/v1/systemone");
     expect(opts.headers.Authorization).toBe("Bearer test-key");
@@ -66,14 +76,41 @@ describe("JevTagger", () => {
 
   it("truncates state to 6000 chars", async () => {
     axiosPost.mockResolvedValue(okBody);
-    await tagger.tag("x".repeat(9000));
+    await tagger.tag(input("x".repeat(9000)));
     expect(axiosPost.mock.calls[0][1].state).toHaveLength(6000);
+  });
+
+  it("sends only the passage as state when there is no title or heading", async () => {
+    axiosPost.mockResolvedValue(okBody);
+    await tagger.tag(input("Ăn ít muối."));
+    expect(axiosPost.mock.calls[0][1].state).toBe("Ăn ít muối.");
+  });
+
+  it("puts the document title and heading before the passage, and truncates only the passage", async () => {
+    axiosPost.mockResolvedValue(okBody);
+    await tagger.tag(input("x".repeat(9000), "Hướng dẫn chế độ ăn", "Người đái tháo đường"));
+    const state: string = axiosPost.mock.calls[0][1].state;
+    expect(state.startsWith("Document title: Hướng dẫn chế độ ăn\nSection: Người đái tháo đường\n\nPassage:\nxxx")).toBe(true);
+    expect(state).toHaveLength(6000);
+  });
+
+  it("tags a table chunk by its heading when the passage never names the condition", async () => {
+    axiosPost.mockImplementation(async (_url: string, body: { state: string }) => ({
+      data: {
+        answers: {
+          domain: { type: "choice", choice: "conditions", probabilities: {} },
+          conditions__diabetes: { type: "noul", noul: body.state.includes("Người đái tháo đường") ? 0.97 : 0.02 },
+        },
+      },
+    }));
+    expect((await tagger.tag(input(diabetesTable.text))).tags.conditions).toEqual([]);
+    expect((await tagger.tag(diabetesTable)).tags.conditions).toEqual(["diabetes"]);
   });
 
   it("retries on 429 then succeeds, with 1s/2s backoff", async () => {
     const err = { response: { status: 429 } };
     axiosPost.mockRejectedValueOnce(err).mockRejectedValueOnce(err).mockResolvedValueOnce(okBody);
-    const r = await tagger.tag("text");
+    const r = await tagger.tag(input("text"));
     expect(axiosPost).toHaveBeenCalledTimes(3);
     expect((tagger as any).sleep.mock.calls.map((c: number[]) => c[0])).toEqual([1000, 2000]);
     expect(r.domain).toBe("conditions");
@@ -81,14 +118,14 @@ describe("JevTagger", () => {
 
   it("gives up after 4 attempts on network errors", async () => {
     axiosPost.mockRejectedValue(new Error("ECONNRESET"));
-    await expect(tagger.tag("text")).rejects.toThrow();
+    await expect(tagger.tag(input("text"))).rejects.toThrow();
     expect(axiosPost).toHaveBeenCalledTimes(4);
     expect((tagger as any).sleep.mock.calls.map((c: number[]) => c[0])).toEqual([1000, 2000, 4000]);
   });
 
   it("throws immediately on a non-429 4xx", async () => {
     axiosPost.mockRejectedValue({ response: { status: 400, data: "bad" } });
-    await expect(tagger.tag("text")).rejects.toBeDefined();
+    await expect(tagger.tag(input("text"))).rejects.toBeDefined();
     expect(axiosPost).toHaveBeenCalledTimes(1);
   });
 
@@ -100,7 +137,7 @@ describe("JevTagger", () => {
       config: { headers: { Authorization: "Bearer SECRET-KEY-123" } },
     });
     axiosPost.mockRejectedValue(axiosErr);
-    const thrown = await t.tag("text").catch((e) => e);
+    const thrown = await t.tag(input("text")).catch((e) => e);
     expect(thrown.message).toBe("Jev request failed (status 401)");
     expect(thrown.status).toBe(401);
     expect(thrown.message).not.toContain("SECRET-KEY-123");
@@ -110,22 +147,22 @@ describe("JevTagger", () => {
 
   it("retries a 5xx", async () => {
     axiosPost.mockRejectedValueOnce({ response: { status: 503 } }).mockResolvedValueOnce(okBody);
-    const r = await tagger.tag("text");
+    const r = await tagger.tag(input("text"));
     expect(axiosPost).toHaveBeenCalledTimes(2);
     expect(r.tagger).toBe("jev");
   });
 
   it("fails when the domain answer is missing or invalid", async () => {
     axiosPost.mockResolvedValue({ data: { answers: { conditions__diabetes: { type: "noul", noul: 1 } } } });
-    await expect(tagger.tag("text")).rejects.toThrow(/domain/);
+    await expect(tagger.tag(input("text"))).rejects.toThrow(/domain/);
     axiosPost.mockResolvedValue({ data: { answers: { domain: { type: "choice", choice: "bogus", probabilities: {} } } } });
-    await expect(tagger.tag("text")).rejects.toThrow(/domain/);
+    await expect(tagger.tag(input("text"))).rejects.toThrow(/domain/);
   });
 
   it("honours RAG_TAG_THRESHOLD", async () => {
     const t = new JevTagger(cfg({ RAG_TAG_THRESHOLD: "0.99" }));
     axiosPost.mockResolvedValue(okBody);
-    const r = await t.tag("text");
+    const r = await t.tag(input("text"));
     expect(r.tags.allergens).toEqual([]);
     expect(r.tags.conditions).toEqual(["diabetes"]);
   });
@@ -136,7 +173,7 @@ describe("GeminiTagger", () => {
     const chat = jest.fn().mockResolvedValue(
       "```json\n" + JSON.stringify({ domain: "conditions", conditions: ["diabetes", "cancer"], allergens: [], goals: [], nutrients: ["sugar"] }) + "\n```",
     );
-    const r = await new GeminiTagger({ chat } as any).tag("text");
+    const r = await new GeminiTagger({ chat } as any).tag(input("text"));
     expect(r).toMatchObject({ domain: "conditions", tagger: "gemini", tags: { conditions: ["diabetes"], nutrients: ["sugar"] } });
     expect(r.scores["conditions:diabetes"]).toBe(1);
     expect(r.scores["domain:conditions"]).toBe(1);
@@ -144,18 +181,35 @@ describe("GeminiTagger", () => {
 
   it("falls back to guidelines for an invalid domain", async () => {
     const chat = jest.fn().mockResolvedValue(JSON.stringify({ domain: "nope", conditions: [] }));
-    const r = await new GeminiTagger({ chat } as any).tag("text");
+    const r = await new GeminiTagger({ chat } as any).tag(input("text"));
     expect(r.domain).toBe("guidelines");
   });
 
   it("throws on unparseable JSON", async () => {
     const chat = jest.fn().mockResolvedValue("not json at all");
-    await expect(new GeminiTagger({ chat } as any).tag("text")).rejects.toThrow();
+    await expect(new GeminiTagger({ chat } as any).tag(input("text"))).rejects.toThrow();
+  });
+
+  it("tags a table chunk by its heading; the prompt says title and heading are context only", async () => {
+    const chat = jest.fn(async (messages: { role: string; content: string }[]) =>
+      JSON.stringify({
+        domain: "conditions",
+        conditions: messages[1].content.includes("Người đái tháo đường") ? ["diabetes"] : [],
+      }),
+    );
+    const tagger = new GeminiTagger({ chat } as any);
+    expect((await tagger.tag(input(diabetesTable.text))).tags.conditions).toEqual([]);
+    expect((await tagger.tag(diabetesTable)).tags.conditions).toEqual(["diabetes"]);
+    const [system, user] = chat.mock.calls[1][0];
+    expect(user.content).toBe(
+      "Document title: Hướng dẫn chế độ ăn\nSection: Chế độ ăn bệnh lý › Người đái tháo đường\n\nPassage:\n" + diabetesTable.text,
+    );
+    expect(system.content).toMatch(/title and section heading are context only/i);
   });
 });
 
 describe("TaggingService", () => {
-  const mk = (jevImpl: (t: string) => Promise<TagResult>, gemImpl?: (t: string) => Promise<TagResult>, config = cfg()) => {
+  const mk = (jevImpl: (t: TagInput) => Promise<TagResult>, gemImpl?: (t: TagInput) => Promise<TagResult>, config = cfg()) => {
     const jev = { name: "jev", tag: jest.fn(jevImpl) } as any;
     const gemini = { name: "gemini", tag: jest.fn(gemImpl ?? (async () => result("gemini"))) } as any;
     return { jev, gemini, svc: new TaggingService(jev, gemini, config) };
@@ -166,7 +220,7 @@ describe("TaggingService", () => {
       throw new Error("down");
     });
     const progress = jest.fn();
-    const { results, warnings } = await svc.tagAll(["a", "b", "c", "d", "e"], progress);
+    const { results, warnings } = await svc.tagAll(inputs("a", "b", "c", "d", "e"), progress);
     expect(jev.tag).toHaveBeenCalledTimes(3);
     expect(gemini.tag).toHaveBeenCalledTimes(5);
     expect(results.every((r) => r?.tagger === "gemini")).toBe(true);
@@ -182,7 +236,7 @@ describe("TaggingService", () => {
       if (i++ % 2 === 0) throw new Error("flaky");
       return result("jev");
     });
-    const { results, warnings } = await svc.tagAll(["a", "b", "c", "d", "e", "f"]);
+    const { results, warnings } = await svc.tagAll(inputs("a", "b", "c", "d", "e", "f"));
     expect(jev.tag).toHaveBeenCalledTimes(6);
     expect(gemini.tag).toHaveBeenCalledTimes(3);
     expect(results.map((r) => r?.tagger)).toEqual(["gemini", "jev", "gemini", "jev", "gemini", "jev"]);
@@ -203,7 +257,7 @@ describe("TaggingService", () => {
         throw axiosErr;
       },
     );
-    const { results, warnings } = await svc.tagAll(["a", "b", "c", "d"]);
+    const { results, warnings } = await svc.tagAll(inputs("a", "b", "c", "d"));
     expect(results).toEqual([null, null, null, null]);
     expect(warnings[0]).toContain("switched to Gemini tagger at chunk 3 (last Jev error: HTTP 401)");
     const logged = warn.mock.calls.map((c) => c.map(String).join(" "));
@@ -223,13 +277,13 @@ describe("TaggingService", () => {
         throw new Error("gem");
       },
     );
-    const { results } = await svc.tagAll(["a"]);
+    const { results } = await svc.tagAll(inputs("a"));
     expect(results).toEqual([null]);
   });
 
   it("uses only Gemini when RAG_TAGGER=gemini", async () => {
     const { jev, gemini, svc } = mk(async () => result("jev"), undefined, cfg({ RAG_TAGGER: "gemini" }));
-    const { results, warnings } = await svc.tagAll(["a", "b"]);
+    const { results, warnings } = await svc.tagAll(inputs("a", "b"));
     expect(jev.tag).not.toHaveBeenCalled();
     expect(gemini.tag).toHaveBeenCalledTimes(2);
     expect(results.every((r) => r?.tagger === "gemini")).toBe(true);
@@ -238,7 +292,7 @@ describe("TaggingService", () => {
 
   it("uses Gemini with a warning when TYPESAFE_API_KEY is missing", async () => {
     const { jev, svc } = mk(async () => result("jev"), undefined, cfg({ TYPESAFE_API_KEY: "" }));
-    const { results, warnings } = await svc.tagAll(["a"]);
+    const { results, warnings } = await svc.tagAll(inputs("a"));
     expect(jev.tag).not.toHaveBeenCalled();
     expect(results[0]?.tagger).toBe("gemini");
     expect(warnings).toHaveLength(1);
@@ -247,11 +301,11 @@ describe("TaggingService", () => {
 
   it("tagOne tries Jev, falls back to Gemini, throws when both fail", async () => {
     const a = mk(async () => result("jev"));
-    expect((await a.svc.tagOne("x")).tagger).toBe("jev");
+    expect((await a.svc.tagOne(input("x"))).tagger).toBe("jev");
     const b = mk(async () => {
       throw new Error("x");
     });
-    expect((await b.svc.tagOne("x")).tagger).toBe("gemini");
+    expect((await b.svc.tagOne(input("x"))).tagger).toBe("gemini");
     const c = mk(
       async () => {
         throw new Error("x");
@@ -260,6 +314,17 @@ describe("TaggingService", () => {
         throw new Error("y");
       },
     );
-    await expect(c.svc.tagOne("x")).rejects.toThrow();
+    await expect(c.svc.tagOne(input("x"))).rejects.toThrow();
+  });
+
+  it("passes the title and heading through to the taggers, in tagAll and tagOne", async () => {
+    const { jev, svc } = mk(async () => result("jev"));
+    await svc.tagAll([diabetesTable]);
+    await svc.tagOne(diabetesTable);
+    expect(jev.tag.mock.calls).toEqual([[diabetesTable], [diabetesTable]]);
+    const gem = mk(async () => result("jev"), undefined, cfg({ RAG_TAGGER: "gemini" }));
+    await gem.svc.tagAll([diabetesTable]);
+    await gem.svc.tagOne(diabetesTable);
+    expect(gem.gemini.tag.mock.calls).toEqual([[diabetesTable], [diabetesTable]]);
   });
 });

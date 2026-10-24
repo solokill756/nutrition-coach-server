@@ -2,7 +2,7 @@ import { Injectable } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import axios from "axios";
 import { RAG_DOMAINS, RAG_TAXONOMY, emptyTags, isRagDomain, type RagTagGroup } from "../rag-taxonomy";
-import type { RagTagger, TagResult } from "./tagger.types";
+import { tagInputText, type RagTagger, type TagInput, type TagResult } from "./tagger.types";
 
 const DEFAULT_URL = "https://api.typesafe.ai/v1";
 const DEFAULT_MODEL = "jev-latest";
@@ -26,8 +26,8 @@ export class JevTagger implements RagTagger {
 
   constructor(private readonly config: ConfigService) {}
 
-  async tag(text: string): Promise<TagResult> {
-    const data = await this.post(text);
+  async tag(input: TagInput): Promise<TagResult> {
+    const data = await this.post(tagInputText(input, STATE_MAX_CHARS));
     return this.toResult(data);
   }
 
@@ -47,11 +47,11 @@ export class JevTagger implements RagTagger {
     return questions;
   }
 
-  private async post(text: string): Promise<Json> {
+  private async post(state: string): Promise<Json> {
     const baseUrl = (this.config.get<string>("TYPESAFE_API_URL") || DEFAULT_URL).replace(/\/+$/, "");
     const apiKey = this.config.get<string>("TYPESAFE_API_KEY") ?? "";
     const body = {
-      state: text.slice(0, STATE_MAX_CHARS),
+      state,
       model: this.config.get<string>("JEV_MODEL") || DEFAULT_MODEL,
       questions: this.buildQuestions(),
     };

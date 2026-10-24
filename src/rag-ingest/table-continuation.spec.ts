@@ -59,7 +59,7 @@ describe('repairTableHeaders', () => {
       kind: 'image',
       image: { base64: 'AA', mimeType: 'image/png', width: 200, height: 200 },
     };
-    const third = table({ header: [['80 tuổi', '1', '2', '3', '4']], rows: [] });
+    const third = table({ page: 17, header: [['80 tuổi', '1', '2', '3', '4']], rows: [] });
     const out = repairTableHeaders([bang2, image, continuation, third]);
     expect((out[2] as Table).caption).toBe('Bảng 2: Nhu cầu canxi');
     expect((out[3] as Table).header).toEqual(bang2.header);
@@ -73,6 +73,26 @@ describe('repairTableHeaders', () => {
     expect(repairTableHeaders([bang2, captioned])[1]).toEqual(captioned);
     const narrow = table({ header: [['Tuổi', 'Nam']], rows: [['1', '2']] });
     expect(repairTableHeaders([bang2, narrow])[1]).toEqual(narrow);
+  });
+
+  it('rule 1 does not apply to two adjacent same-width tables on the same page', () => {
+    const second = table({
+      page: 15,
+      header: [['Nhóm', 'Nam', 'Nam', 'Nữ', 'Nữ']],
+      rows: [['19-49 tuổi', '700', '3000', '700', '3000']],
+    });
+    expect(repairTableHeaders([bang2, second])[1]).toEqual(second);
+  });
+
+  it('rule 1 does not apply when either table has no page (e.g. a web page); rule 2 handles the table alone', () => {
+    const { page: _page, ...noPage } = continuation;
+    const fixed = repairTableHeaders([bang2, noPage])[1] as Table;
+    expect(fixed.caption).toBeUndefined();
+    expect(fixed.header).toEqual([]);
+    expect(fixed.rows[0]).toEqual(['≥70 tuổi', '1000', '2000', '1000', '2000']);
+
+    const { page: _bang2Page, ...bang2NoPage } = bang2;
+    expect((repairTableHeaders([bang2NoPage, continuation])[1] as Table).caption).toBeUndefined();
   });
 
   it('rule 2: a data-like header row becomes a data row; with no header left the columns fall back to "Column N"', () => {

@@ -267,6 +267,23 @@ export function mapDoclingDocument(
   return result;
 }
 
+/** ".../Your_Guide-to%20TLC.pdf?x=1" -> "Your Guide to TLC"; null when the URL has no file name. */
+export function titleFromPdfUrl(url: string): string | null {
+  let name: string;
+  try {
+    name = new URL(url).pathname.split('/').filter(Boolean).pop() ?? '';
+  } catch {
+    return null;
+  }
+  try {
+    name = decodeURIComponent(name);
+  } catch {
+    // Malformed %-escape: keep the raw segment.
+  }
+  const title = normalizeText(name.replace(/\.pdf$/i, '').replace(/[_+-]+/g, ' '));
+  return title === '' ? null : title;
+}
+
 const FETCH_MESSAGE =
   /\b[45]\d\d (Client|Server) Error\b|URL is not allowed|Max retries exceeded|Name or service not known|Failed to resolve|Connection (refused|aborted|reset)|timed out/i;
 
@@ -293,7 +310,10 @@ export class DoclingClient {
         do_ocr: false,
       },
     }, true);
-    return mapDoclingDocument(this.jsonContent(data, true), url);
+    const json = this.jsonContent(data, true);
+    // Docling labels no title item in most PDFs; the PDF's file name reads better than its URL.
+    const isPdf = isObj(json) && isObj(json.origin) && json.origin.mimetype === 'application/pdf';
+    return mapDoclingDocument(json, (isPdf ? titleFromPdfUrl(url) : null) ?? url);
   }
 
   /**

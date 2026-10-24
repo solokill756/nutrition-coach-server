@@ -229,6 +229,27 @@ describe("RagStoreService", () => {
     expect(docUpdate!.params).toContain("vi");
   });
 
+  // #39: re-ingesting must not overwrite a title the admin renamed; only the URL/filename placeholder is replaced.
+  it("keeps a title the admin renamed when re-ingesting", async () => {
+    const { store, txCalls } = makeStore((sql) => {
+      if (/FROM .*rag_documents.*FOR UPDATE/s.test(sql)) return [{ ...docRow, title: "Admin title" }];
+      if (/count\(\*\)/i.test(sql)) return [{ count: 1 }];
+      return [];
+    });
+    await store.applyIngestResult("doc-1", {
+      title: "Extracted Title",
+      language: "en",
+      chunks: [ready("g", "1")],
+      draftKeys: [{ chunkKey: "g", sourceContentHash: "1" }],
+    });
+    const insert = txCalls.find((c) => /INSERT INTO .*rag_chunks/s.test(c.sql));
+    expect(insert!.params).toContain("Admin title");
+    expect(insert!.params).not.toContain("Extracted Title");
+    const docUpdate = txCalls.find((c) => /UPDATE .*rag_documents/s.test(c.sql));
+    expect(docUpdate!.sql).toMatch(/title = CASE WHEN title = '' OR title = \$2 THEN \$3 ELSE title END/);
+    expect(docUpdate!.params[1]).toBe("https://x.test/a");
+  });
+
   it("does not interpolate values into SQL", async () => {
     const { store, txCalls } = makeStore((sql) => {
       if (/FROM .*rag_documents.*FOR UPDATE/s.test(sql)) return [docRow];

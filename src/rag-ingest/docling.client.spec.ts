@@ -459,6 +459,48 @@ describe('DoclingClient (async API)', () => {
     expect((mockedAxios.post.mock.calls[0][1] as FormData).get('files')).toHaveProperty('name', 'Hướng dẫn dinh dưỡng.PDF');
   });
 
+  // #39: Docling labels no title item in most PDFs, so URL-sourced PDFs were titled with their URL.
+  const urlResult = (json_content: object) => ({ ...pdfResponse, document: { ...pdfResponse.document, json_content } });
+
+  it('convertUrl: a PDF without a title item is titled from its file name, not the URL', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], pdfResponse);
+    const doc = await settle(
+      client.convertUrl('https://www.nhlbi.nih.gov/sites/default/files/publications/Your_Guide_to_Lowering_Your_Cholesterol_with_TLC.pdf'),
+    );
+    expect(doc.title).toBe('Your Guide to Lowering Your Cholesterol with TLC');
+  });
+
+  it('convertUrl: decodes the file name and drops the query string', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], pdfResponse);
+    const doc = await settle(client.convertUrl('https://kcb.vn/upload/2021//3087_QD-BYT_Huong-dan%20chan--doan.PDF?download=1'));
+    expect(doc.title).toBe('3087 QD BYT Huong dan chan doan');
+  });
+
+  it('convertUrl: a PDF title item still wins over the file name', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets(
+      [taskStatus('success')],
+      urlResult({
+        name: 'x',
+        origin: { mimetype: 'application/pdf' },
+        body: { children: [{ $ref: '#/texts/0' }] },
+        texts: [{ label: 'title', text: 'Why the DASH Eating Plan Works' }],
+      }),
+    );
+    const doc = await settle(client.convertUrl('https://www.nhlbi.nih.gov/files/WhyDASHWorks_UpdateNov20.pdf'));
+    expect(doc.title).toBe('Why the DASH Eating Plan Works');
+  });
+
+  it('convertUrl: falls back to the URL when the PDF URL has no file name, or the page is not a PDF', async () => {
+    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
+    mockGets([taskStatus('success')], urlResult({ name: 'x', origin: { mimetype: 'application/pdf' }, texts: [] }));
+    expect((await settle(client.convertUrl('https://example.org/'))).title).toBe('https://example.org/');
+    mockGets([taskStatus('success')], urlResult({ name: 'x', origin: { mimetype: 'text/html' }, texts: [] }));
+    expect((await settle(client.convertUrl('https://example.org/salt-reduction'))).title).toBe('https://example.org/salt-reduction');
+  });
+
   it('honours DOCLING_URL and strips a trailing slash', async () => {
     const c = new DoclingClient(cfg({ DOCLING_URL: 'http://docling:5001/' }));
     mockedAxios.post.mockResolvedValue(taskStatus('pending'));

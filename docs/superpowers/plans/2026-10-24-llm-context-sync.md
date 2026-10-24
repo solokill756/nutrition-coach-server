@@ -32,7 +32,7 @@
 ## Review Focus
 
 1. **Nhãn dị ứng khác kiểu viết.** Gặp `"Eggs"`, `" eggs "`, hay nhãn tự gõ tiếng Việt như `"Trứng"`, bộ lọc vẫn phải bắt được "Trứng gà". Test ở Task 3.
-2. **Tên món ở dạng Unicode NFD** (dấu tách rời, hay gặp khi copy từ macOS). `"Trưng gà"` vẫn phải khớp `eggs`. Test ở Task 3.
+2. **Tên món ở dạng Unicode NFD** (dấu tách rời, hay gặp khi copy từ macOS). `"Trứng gà".normalize("NFD")` vẫn phải khớp `eggs`. Test ở Task 3.
 3. **Lọc xong không còn đủ món.** Người dùng có 3 món mà cả 3 bị loại thì phải nhận lỗi 400 rõ ràng nêu lý do, không crash và không ra kế hoạch rỗng. Test ở Task 6.
 4. **Tạo lại một bữa** (`regenerateSlot`) cũng phải lọc, không chỉ `generateDailyPlan`. Test ở Task 6.
 5. **Retrieval lỗi.** Recipe vẫn tạo được công thức và Dashboard vẫn gọi LLM, phần tham khảo là `"None."`. Test ở Task 1.
@@ -233,7 +233,7 @@ git commit -m "feat(nutrition): shared LLM user profile block; goals by startDat
 `allergen-match.spec.ts` (gọi `findAllergens`):
 - `"Trứng gà"`, `["Eggs"]` → `["Eggs"]`
 - `"Trứng gà"`, `[" eggs "]` → `[" eggs "]`
-- `"Trưng gà"` (NFD), `["Eggs"]` → `["Eggs"]`
+- `"Trứng gà".normalize("NFD")`, `["Eggs"]` → `["Eggs"]` (viết đúng biểu thức này trong test, không gõ ký tự tổ hợp bằng tay)
 - `"Cá hồi"`, `["Fish"]` → `["Fish"]`
 - `"Cà chua"`, `["Fish"]` → `[]`
 - `"Cám gạo"`, `["Fish"]` → `[]`

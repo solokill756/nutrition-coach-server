@@ -1,4 +1,4 @@
-import { buildPersonalizedRagQuery } from "./personalized-rag-query";
+import { buildPersonalizedRagQuery, ragQueryInputFromContext } from "./personalized-rag-query";
 
 describe("buildPersonalizedRagQuery", () => {
   const baseInput = {
@@ -38,5 +38,20 @@ describe("buildPersonalizedRagQuery", () => {
     const { hints } = buildPersonalizedRagQuery({ ...baseInput, purpose: "dashboard_suggestion" });
     expect(hints.intent).toBe("condition_specific");
     expect(hints.hasConditionContext).toBe(true);
+  });
+});
+
+describe("ragQueryInputFromContext", () => {
+  it("maps a recipe context to query input with the given purpose", () => {
+    const ctx = {
+      profile: { sex: "female", dietType: "vegan", allergies: ["peanut"], fitnessLevel: "high" },
+      goalsDetailed: [{ goalType: "weight_loss" }, { goalType: "muscle_gain" }],
+      healthDetailed: [{ conditionName: "hypertension" }],
+      conditionRelatedThresholds: [],
+    } as any;
+    const out = ragQueryInputFromContext(ctx, "dashboard_suggestion");
+    expect(out.purpose).toBe("dashboard_suggestion");
+    expect(out.goalTypes).toEqual(ctx.goalsDetailed.map((g: any) => g.goalType));
+    expect(out.profile.allergies).toEqual(ctx.profile.allergies);
   });
 });

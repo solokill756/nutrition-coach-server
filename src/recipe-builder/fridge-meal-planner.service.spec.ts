@@ -1,6 +1,8 @@
 import { BadRequestException } from "@nestjs/common";
 import { FridgeMealPlannerService } from "./fridge-meal-planner.service";
 import { heuristicAllocateWithExclude, pickFoodsForSlotWithExclude } from "./fridge-staple-allocation";
+import { FridgeStapleAllocationService } from "./fridge-staple-allocation.service";
+import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-unit.service";
 
 function createService() {
   const recipeBuilderService: any = {
@@ -23,9 +25,9 @@ function createService() {
   };
   const stapleFoodService: any = {
     listWithFood: jest.fn().mockResolvedValue([
-      { id: 1, calories: 100, protein: 10, carbs: 5, fat: 2, fiber: 1 },
-      { id: 2, calories: 200, protein: 5, carbs: 20, fat: 4, fiber: 3 },
-      { id: 3, calories: 150, protein: 8, carbs: 8, fat: 7, fiber: 2 },
+      { id: 1, foodName: "Food 1", calories: 100, protein: 10, carbs: 5, fat: 2, fiber: 1 },
+      { id: 2, foodName: "Food 2", calories: 200, protein: 5, carbs: 20, fat: 4, fiber: 3 },
+      { id: 3, foodName: "Food 3", calories: 150, protein: 8, carbs: 8, fat: 7, fiber: 2 },
     ]),
   };
   const userContextService: any = {
@@ -36,6 +38,7 @@ function createService() {
       thresholds: [],
       profile: { dietType: null, allergies: [] },
       healthDetailed: [],
+      goalsDetailed: [],
       conditionRelatedThresholds: [],
     }),
   };
@@ -44,6 +47,9 @@ function createService() {
       allocations: heuristicAllocateWithExclude(staples, generatingSlots),
       source: "heuristic",
     })),
+  };
+  const userReferenceService: any = {
+    retrieve: jest.fn().mockResolvedValue({ text: "ref text", used: [] }),
   };
   const config: any = { get: jest.fn(() => undefined) };
   const userRepo: any = { find: jest.fn().mockResolvedValue([]) };
@@ -59,10 +65,13 @@ function createService() {
     logFoodRepo,
     recipeRepo,
     stapleAllocationService,
+    userReferenceService,
+    new ConditionNutrientUnitService(),
   );
 
   return {
     service,
+    userReferenceService,
     stapleFoodService,
     recipeBuilderService,
     stapleAllocationService,
@@ -228,6 +237,7 @@ describe("FridgeMealPlannerService slot allocation and regeneration", () => {
       thresholds: [],
       profile: { dietType: null, allergies: [] },
       healthDetailed: [],
+      goalsDetailed: [],
       conditionRelatedThresholds: [],
       mealSplits: { breakfast: 0.3, lunch: 0.4, dinner: 0.3, snack: 0 },
     });
@@ -263,6 +273,92 @@ describe("FridgeMealPlannerService slot allocation and regeneration", () => {
     expect(out).toHaveProperty("status");
     // generateRecipe (via recipeBuilderService) was called exactly for lunch slot
     expect(recipeBuilderService.generateRecipe).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("FridgeMealPlannerService safety filtering and references", () => {
+  const EGG_REASON = 'Removed "Trứng gà": you are allergic to Eggs.';
+  const food = (id: number, foodName: string) => ({
+    id, foodName, calories: 100, protein: 10, carbs: 5, fat: 2, fiber: 1,
+  });
+  const staples4 = [food(1, "Trứng gà"), food(2, "Thịt heo"), food(3, "Rau muống"), food(4, "Gạo")];
+
+  function eggAllergic(setup: ReturnType<typeof createService>, staples: any[] = staples4) {
+    setup.stapleFoodService.listWithFood.mockResolvedValue(staples);
+    setup.userContextService.assembleRecipeGenerationContext.mockResolvedValue({
+      dailyTargetCalories: 2000,
+      remaining: { calories: 1800 },
+      todayIntake: { totalCalories: 400 },
+      thresholds: [],
+      profile: { dietType: null, allergies: ["Eggs"] },
+      healthDetailed: [],
+      goalsDetailed: [],
+      conditionRelatedThresholds: [],
+    });
+  }
+
+  it("retrieves references once per plan", async () => {
+    const s = createService();
+    await s.service.generateDailyPlan(1, "2026-06-11");
+    expect(s.userReferenceService.retrieve).toHaveBeenCalledTimes(1);
+    const calls = s.recipeBuilderService.generateRecipe.mock.calls;
+    expect(calls).toHaveLength(4);
+    const first = calls[0][3];
+    expect(first).toEqual({ references: { text: "ref text", used: [] } });
+    for (const c of calls) expect(c[3].references).toBe(first.references);
+  });
+
+  it("never allocates allergen staples", async () => {
+    const s = createService();
+    eggAllergic(s);
+    await s.service.generateDailyPlan(1, "2026-06-11");
+    const { staples } = s.stapleAllocationService.allocateStaplesForPlan.mock.calls[0][0];
+    expect(staples.map((f: any) => f.id)).toEqual([2, 3, 4]);
+  });
+
+  it("heuristic fallback never picks allergen staples", async () => {
+    const s = createService();
+    eggAllergic(s);
+    const ollama: any = { chat: jest.fn().mockRejectedValue(new Error("down")) };
+    const real = new FridgeStapleAllocationService(ollama);
+    (s.service as any).stapleAllocationService = real;
+    const spy = jest.spyOn(real, "allocateStaplesForPlan");
+    await s.service.generateDailyPlan(1, "2026-06-11");
+    expect(ollama.chat).toHaveBeenCalled();
+    const result = await spy.mock.results[0].value;
+    expect(result.source).toBe("heuristic");
+    for (const ids of Object.values(result.allocations) as number[][]) {
+      expect(ids).not.toContain(1);
+    }
+  });
+
+  it("removal reasons reach slot warnings", async () => {
+    const s = createService();
+    eggAllergic(s);
+    const out = await s.service.generateDailyPlan(1, "2026-06-11");
+    const created = out.slots.filter((x) => x.status === "created");
+    expect(created.length).toBeGreaterThan(0);
+    for (const slot of created) expect(slot.generationWarnings).toContain(EGG_REASON);
+    const saved = s.recipeBuilderService.createGeneratedRecipe.mock.calls[0][2];
+    expect(saved.generationWarnings[0]).toBe(EGG_REASON);
+  });
+
+  it("400 when fewer than 2 safe staples", async () => {
+    const s = createService();
+    eggAllergic(s, [food(1, "Trứng gà"), food(2, "Trứng vịt"), food(4, "Gạo")]);
+    const err: any = await s.service.generateDailyPlan(1, "2026-06-11").catch((e) => e);
+    expect(err).toBeInstanceOf(BadRequestException);
+    expect(err.message).toContain("Not enough suitable staple foods");
+    expect(err.message).toContain('Removed "Trứng gà"');
+  });
+
+  it("regenerateSlot filters too", async () => {
+    const s = createService();
+    eggAllergic(s);
+    await s.service.regenerateSlot(1, "2026-06-11", "lunch");
+    const { staples } = s.stapleAllocationService.allocateStaplesForPlan.mock.calls[0][0];
+    expect(staples.map((f: any) => f.id)).toEqual([2, 3, 4]);
+    expect(s.userReferenceService.retrieve).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -1,11 +1,9 @@
-import { Injectable } from "@nestjs/common";
+import { Injectable, Logger } from "@nestjs/common";
 import { OllamaService } from "../ollama/ollama.service";
-import { RetrievalService } from "../retrieval/retrieval.service";
-import { buildPersonalizedRagQuery } from "../retrieval/personalized-rag-query";
-import { buildRagReferenceBlock } from "../retrieval/rag-reference-block";
-import type { RetrievalResult } from "../retrieval/retrieval.types";
-import type { UserNutrientThreshold } from "../nutrition/user-context.service";
-import { formatThresholdMinMax } from "../nutrition/condition-related-thresholds";
+import { UserReferenceService } from "../retrieval/user-reference.service";
+import { ragQueryInputFromContext } from "../retrieval/personalized-rag-query";
+import type { RecipeGenerationContext } from "../nutrition/user-context.service";
+import { buildLlmUserProfile, formatLlmUserBlock } from "../nutrition/llm-user-profile";
 import { DashboardAlert } from "./dashboard-alert.service";
 
 export type DashboardAiSuggestion = {
@@ -14,19 +12,7 @@ export type DashboardAiSuggestion = {
 };
 
 export type DashboardAiSuggestionContext = {
-  user: {
-    age: number | null;
-    sex: string | null;
-    weightKg: number | null;
-    goalWeightKg: number | null;
-    fitnessLevel: string | null;
-    dietType: string | null;
-    allergies: string[];
-    goalType: string | null;
-    conditions: string[];
-  };
-  healthDetailed: Array<{ conditionName: string }>;
-  conditionRelatedThresholds: UserNutrientThreshold[];
+  userContext: RecipeGenerationContext;
   calories: {
     target: number;
     consumed: number;
@@ -56,14 +42,14 @@ export type DashboardAiSuggestionContext = {
 const AI_SUGGESTION_TIMEOUT_MS = 20000;
 const AI_SUGGESTION_TITLE_MAX = 40;
 const AI_SUGGESTION_MESSAGE_MAX = 180;
-/** Reference budget for one short suggestion: about two whole chunks. */
-const AI_SUGGESTION_REFERENCE_MAX_CHARS = 4000;
 
 @Injectable()
 export class DashboardAiService {
+  private readonly logger = new Logger(DashboardAiService.name);
+
   constructor(
     private readonly ollamaService: OllamaService,
-    private readonly retrievalService: RetrievalService,
+    private readonly userReferenceService: UserReferenceService,
   ) {}
 
   async buildAiSuggestion(ctx: DashboardAiSuggestionContext): Promise<DashboardAiSuggestion> {
@@ -74,8 +60,9 @@ export class DashboardAiService {
       waterTargetMl: ctx.water.targetMl,
       workoutCount: ctx.exercise.workoutCount,
     });
-    const ragContexts = await this.retrieveSuggestionContexts(ctx);
-    const ragReference = buildRagReferenceBlock(ragContexts, AI_SUGGESTION_REFERENCE_MAX_CHARS).text;
+    const references = await this.userReferenceService.retrieve(
+      ragQueryInputFromContext(ctx.userContext, "dashboard_suggestion"),
+    );
     const systemPrompt = [
       "You are a concise nutrition coach for a daily dashboard.",
       "Return JSON only with exactly this shape: {\"title\":\"short title\",\"message\":\"one practical sentence\"}.",
@@ -88,10 +75,9 @@ export class DashboardAiService {
 
     const userPrompt = [
       "Create one practical suggestion for today from this dashboard context.",
+      formatLlmUserBlock(buildLlmUserProfile(ctx.userContext)),
       // Compact JSON: indentation is pure token overhead for the model.
-      JSON.stringify({
-        user: ctx.user,
-        conditionLimits: ctx.conditionRelatedThresholds.map(formatThresholdMinMax).filter(Boolean),
+      `Dashboard today (JSON):\n${JSON.stringify({
         calories: ctx.calories,
         macros: ctx.macros,
         water: ctx.water,
@@ -104,10 +90,12 @@ export class DashboardAiService {
           unit: a.unit,
           percent: a.percent,
         })),
-      }),
-      `Retrieved reference snippets:\n${ragReference}`,
+      })}`,
+      `Retrieved reference snippets:\n${references.text}`,
     ].join("\n\n");
 
+    const startedAt = Date.now();
+    let usedFallback = false;
     try {
       const raw = await this.withTimeout(
         this.ollamaService.chat([
@@ -116,37 +104,18 @@ export class DashboardAiService {
         ]),
         AI_SUGGESTION_TIMEOUT_MS,
       );
-      return this.parseAiSuggestion(raw) ?? fallback;
+      const parsed = this.parseAiSuggestion(raw);
+      usedFallback = parsed == null;
+      return parsed ?? fallback;
     } catch (error) {
+      usedFallback = true;
       const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[DASHBOARD-AI] AI suggestion fallback: ${message}`);
+      this.logger.warn(`AI suggestion fallback: ${message}`);
       return fallback;
+    } finally {
+      this.logger.log(`[DASHBOARD-AI] latencyMs=${Date.now() - startedAt} fallback=${usedFallback}`);
     }
   }
-
-  private async retrieveSuggestionContexts(ctx: DashboardAiSuggestionContext): Promise<RetrievalResult[]> {
-    const { question, hints } = buildPersonalizedRagQuery({
-      purpose: "dashboard_suggestion",
-      profile: {
-        sex: ctx.user.sex,
-        dietType: ctx.user.dietType,
-        allergies: ctx.user.allergies,
-        fitnessLevel: ctx.user.fitnessLevel,
-      },
-      goalTypes: ctx.user.goalType ? [ctx.user.goalType] : [],
-      healthDetailed: ctx.healthDetailed,
-      conditionRelatedThresholds: ctx.conditionRelatedThresholds,
-    });
-
-    try {
-      return await this.retrievalService.retrieve(question, 4, hints);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn(`[DASHBOARD-AI] RAG suggestion fallback: ${message}`);
-      return [];
-    }
-  }
-
 
   buildFallbackSuggestion(ctx: {
     remaining: number;

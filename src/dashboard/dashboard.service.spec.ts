@@ -2,8 +2,9 @@ import { DashboardService } from "./dashboard.service";
 import { DashboardAlertService } from "./dashboard-alert.service";
 import { DashboardAiService } from "./dashboard-ai.service";
 import { OllamaService } from "../ollama/ollama.service";
-import { RetrievalService } from "../retrieval/retrieval.service";
-import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-unit.service";
+import { UserReferenceService } from "../retrieval/user-reference.service";
+import { UserContextService } from "../nutrition/user-context.service";
+import { sampleRecipeContext } from "../nutrition/__fixtures__/llm-context.fixture";
 import { DashboardEventBus } from "./dashboard-event-bus";
 
 function createQueryBuilderMock() {
@@ -51,11 +52,6 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
       { nutrient: "sodium", maxAmount: 1500, minAmount: 500, unit: "mg", isActive: true },
     ]),
   };
-  const ruleRepo = {
-    find: jest.fn().mockResolvedValue([
-      { conditionKey: "hypertension", nutrient: "sodium", minAmount: 500, maxAmount: 1500, unit: "mg", isActive: true },
-    ]),
-  };
   const diaryService = {
     getDay: jest.fn().mockResolvedValue({
       totalCalories: 1600,
@@ -81,20 +77,14 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
     calculateForProfile: jest.fn().mockReturnValue(2200),
   };
   const ollamaService = { chat } as unknown as OllamaService;
-  const retrievalService = {
-    retrieve: jest.fn().mockResolvedValue([
-      {
-        id: "sodium-1",
-        source: "nutrition-guideline",
-        title: "Lower sodium meals",
-        content: "Choose lower-sodium foods and pair meals with vegetables, fruit, and water.",
-        domain: "guidelines",
-        score: 0.91,
-      },
-    ]),
-  } as unknown as RetrievalService;
-  const dashboardAiService = new DashboardAiService(ollamaService, retrievalService);
-  const conditionNutrientUnits = new ConditionNutrientUnitService();
+  const userReferenceService = {
+    retrieve: jest.fn().mockResolvedValue({ text: "[1] Lower sodium meals (source: nutrition-guideline)", used: [] }),
+  } as unknown as UserReferenceService;
+  const userContext = sampleRecipeContext();
+  const userContextService = {
+    assembleRecipeGenerationContext: jest.fn().mockResolvedValue(userContext),
+  } as unknown as UserContextService;
+  const dashboardAiService = new DashboardAiService(ollamaService, userReferenceService);
 
   const service = new DashboardService(
     userRepo as never,
@@ -104,18 +94,24 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
     waterRepo as never,
     logFoodRepo as never,
     thresholdRepo as never,
-    ruleRepo as never,
     diaryService as never,
     nutritionCalculator as never,
-    conditionNutrientUnits,
     weightService as never,
     hydrationTargetService as never,
     new DashboardAlertService(),
+    userContextService,
     dashboardAiService,
     new DashboardEventBus(),
   );
 
-  return { service, chat, retrievalService: retrievalService as unknown as { retrieve: jest.Mock } };
+  return {
+    service,
+    chat,
+    userContext,
+    userReferenceService: userReferenceService as unknown as { retrieve: jest.Mock },
+    userContextService: userContextService as unknown as { assembleRecipeGenerationContext: jest.Mock },
+    dashboardAiService,
+  };
 }
 
 describe("DashboardService AI suggestion", () => {
@@ -152,25 +148,15 @@ describe("DashboardService AI suggestion", () => {
   });
 
   it("uses the AI JSON suggestion from the suggestion endpoint path", async () => {
-    const { service, chat, retrievalService } = createService(
+    const { service, chat, userReferenceService } = createService(
       jest.fn().mockResolvedValue('{"title":"Plan dinner","message":"Choose a low-sodium dinner and drink water with it."}'),
     );
 
     const result = await service.getTodaySuggestion(1, "2026-05-22");
 
     expect(chat).toHaveBeenCalledTimes(1);
-    expect(retrievalService.retrieve).toHaveBeenCalledWith(
-      expect.stringContaining("Condition-related nutrient limits"),
-      4,
-      expect.objectContaining({
-        intent: "condition_specific",
-        hasConditionContext: true,
-      }),
-    );
-    expect(retrievalService.retrieve).toHaveBeenCalledWith(
-      expect.stringContaining("sodium min 500 mg max 1500 mg"),
-      4,
-      expect.any(Object),
+    expect(userReferenceService.retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "dashboard_suggestion" }),
     );
     const messages = chat.mock.calls[0][0];
     expect(messages[1].content).toContain("Retrieved reference snippets");
@@ -181,7 +167,19 @@ describe("DashboardService AI suggestion", () => {
     });
   });
 
-  it("sends the coach what it needs: age and condition limits, no name or alert bookkeeping", async () => {
+  it("getTodaySuggestion builds context from UserContextService", async () => {
+    const { service, userContext, userContextService, dashboardAiService } = createService(
+      jest.fn().mockResolvedValue('{"title":"Plan dinner","message":"Choose a low-sodium dinner."}'),
+    );
+    const buildSpy = jest.spyOn(dashboardAiService, "buildAiSuggestion");
+
+    await service.getTodaySuggestion(1, "2026-05-22", 420);
+
+    expect(userContextService.assembleRecipeGenerationContext).toHaveBeenCalledWith(1, "2026-05-22", "breakfast", 420);
+    expect(buildSpy.mock.calls[0][0].userContext).toBe(userContext);
+  });
+
+  it("sends the coach the shared user block (age) and dashboard data, no name or alert bookkeeping", async () => {
     const { service, chat } = createService(
       jest.fn().mockResolvedValue('{"title":"Plan dinner","message":"Choose a low-sodium dinner."}'),
     );
@@ -190,7 +188,6 @@ describe("DashboardService AI suggestion", () => {
 
     const prompt = chat.mock.calls[0][0][1].content;
     expect(prompt).toContain('"age":34');
-    expect(prompt).toContain('"conditionLimits":["sodium min 500 mg max 1500 mg"]');
     expect(prompt).toContain('"nutrient":"sodium"');
     expect(prompt).not.toContain("Alex");
     expect(prompt).not.toContain("isRead");

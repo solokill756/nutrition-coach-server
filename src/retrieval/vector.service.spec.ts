@@ -48,8 +48,47 @@ describe("VectorService", () => {
     await service.getQueryEmbedding("  Người tiểu đường ");
     expect(fetchMock).toHaveBeenCalledWith(
       expect.stringMatching(/\/api\/embed$/),
-      expect.objectContaining({ body: JSON.stringify({ model: "bge-m3", input: ["Người tiểu đường"] }) }),
+      expect.objectContaining({ body: JSON.stringify({ model: "bge-m3", input: ["Người tiểu đường"], keep_alive: -1 }) }),
     );
+  });
+
+  // #36: Ollama unloads idle models after 5 min; reloading bge-m3 (~3 s) blew the 3 s query-embedding timeout.
+  it("keeps the RAG model loaded by default (keep_alive -1)", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    const service = new VectorService(createConfig(false), createPostgres(false));
+    await service.embedDocuments(["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).keep_alive).toBe(-1);
+  });
+
+  it("honours OLLAMA_KEEP_ALIVE: numbers are sent as seconds, durations as strings", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    await new VectorService(createConfig(false, { OLLAMA_KEEP_ALIVE: "600" }), createPostgres(false)).embedDocuments(["a"]);
+    await new VectorService(createConfig(false, { OLLAMA_KEEP_ALIVE: "30m" }), createPostgres(false)).embedDocuments(["a"]);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).keep_alive).toBe(600);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body).keep_alive).toBe("30m");
+  });
+
+  it("onModuleInit warms up the RAG model in the background", async () => {
+    fetchMock.mockResolvedValue(okJson({ embeddings: [[0.1]] }));
+    const service = new VectorService(createConfig(true), createPostgres(true));
+    await service.onModuleInit();
+    await new Promise((r) => setImmediate(r));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(fetchMock.mock.calls[0][0]).toMatch(/\/api\/embed$/);
+    expect(body).toEqual(expect.objectContaining({ model: "bge-m3", keep_alive: -1 }));
+  });
+
+  it("a failed warm-up does not break startup", async () => {
+    fetchMock.mockRejectedValue(new Error("connect ECONNREFUSED"));
+    const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const service = new VectorService(createConfig(true), createPostgres(true));
+    await expect(service.onModuleInit()).resolves.toBeUndefined();
+    await new Promise((r) => setImmediate(r));
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("warm-up"));
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 
   function trackInFlight() {

@@ -24,6 +24,18 @@ type QueryEmbeddingCache = {
 /** RAG_INGEST_EMBED_BATCH_SIZE default: one text per request, so a user query can slip in between ingest chunks. */
 const DEFAULT_EMBED_BATCH_SIZE = 1;
 
+/**
+ * OLLAMA_KEEP_ALIVE default: keep the RAG model loaded. Ollama unloads idle models after 5 min,
+ * and reloading bge-m3 (~3 s) exceeds the query-embedding timeout, dropping retrieval to BM25 only.
+ */
+const DEFAULT_KEEP_ALIVE = "-1";
+
+/** Ollama takes keep_alive as seconds (number, negative = forever) or a duration string such as "30m". */
+function parseKeepAlive(raw: string | undefined): number | string {
+  const value = String(raw ?? "").trim() || DEFAULT_KEEP_ALIVE;
+  return /^-?\d+$/.test(value) ? Number(value) : value;
+}
+
 @Injectable()
 export class VectorService implements OnModuleInit {
   // Configuration
@@ -31,6 +43,7 @@ export class VectorService implements OnModuleInit {
   private embeddingDim = 1024; // RAG_EMBEDDING_DIM
   private foodModel = "nomic-embed-text"; // FOOD_EMBEDDING_MODEL (food search only)
   private embedBatchSize = DEFAULT_EMBED_BATCH_SIZE; // RAG_INGEST_EMBED_BATCH_SIZE
+  private keepAlive: number | string; // OLLAMA_KEEP_ALIVE
   private ollamaBaseUrl = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
   private cacheDir = ".vector-cache";
   private cacheFile = "embeddings_cache.json";
@@ -54,6 +67,7 @@ export class VectorService implements OnModuleInit {
     this.foodModel = this.config.get<string>("FOOD_EMBEDDING_MODEL") || this.foodModel;
     const batch = Math.floor(Number(this.config.get<string>("RAG_INGEST_EMBED_BATCH_SIZE")));
     this.embedBatchSize = batch > 0 ? batch : DEFAULT_EMBED_BATCH_SIZE;
+    this.keepAlive = parseKeepAlive(this.config.get<string>("OLLAMA_KEEP_ALIVE"));
   }
 
   async onModuleInit() {
@@ -76,6 +90,17 @@ export class VectorService implements OnModuleInit {
     } catch (error) {
       console.warn(`[VECTOR] ⚠️ Cache load failed: ${error}`);
       this.isReady = false;
+    }
+    // Not awaited: startup must not wait for (or fail on) Ollama.
+    void this.warmUpRagModel();
+  }
+
+  /** Loads the RAG model into Ollama so the first user query does not pay the model load time. */
+  private async warmUpRagModel(): Promise<void> {
+    try {
+      await this.requestEmbedBatch(["warm-up"]);
+    } catch (error) {
+      console.warn(`[VECTOR] ⚠️ RAG embedding model warm-up failed: ${error}`);
     }
   }
 
@@ -307,7 +332,7 @@ export class VectorService implements OnModuleInit {
       const response = await fetch(`${this.ollamaBaseUrl}/api/embed`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: this.model, input }),
+        body: JSON.stringify({ model: this.model, input, keep_alive: this.keepAlive }),
         ...(signal ? { signal } : {})
       });
 

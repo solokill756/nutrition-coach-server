@@ -157,6 +157,7 @@ describe("DashboardService AI suggestion", () => {
     expect(chat).toHaveBeenCalledTimes(1);
     expect(userReferenceService.retrieve).toHaveBeenCalledWith(
       expect.objectContaining({ purpose: "dashboard_suggestion" }),
+      { skipCrossEncoder: true },
     );
     const messages = chat.mock.calls[0][0];
     expect(messages[1].content).toContain("Retrieved reference snippets");

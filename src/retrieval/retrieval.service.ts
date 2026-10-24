@@ -18,7 +18,6 @@ import {
 
 // RRF (Reciprocal Rank Fusion) Parameters
 const RRF_K = 60;
-const CROSS_ENCODER_LITE_TOPK = 10;
 const CROSS_ENCODER_BLEND_WEIGHT = 0.4;
 
 const REBUILD_DEBOUNCE_MS = 2000;
@@ -200,11 +199,13 @@ export class RetrievalService implements OnModuleInit {
         return { doc, semanticScore: this.vectorService.cosineSimilarity(queryEmbedding, docEmbedding) };
       });
 
+      // finalDocIds is in RRF order (candidateDocs is in index order); the reranker scores the best few.
+      const candidateById = new Map(candidateDocs.map((doc) => [doc.id, doc]));
+      const rrfOrderedCandidates = finalDocIds
+        .map((id) => candidateById.get(id))
+        .filter((doc): doc is DomainDoc => doc !== undefined);
       const crossEncoderScores = !hints.skipCrossEncoder && this.crossEncoder.isEnabled()
-        ? await this.crossEncoder.rerank(
-            question,
-            candidateDocs.filter((doc) => candidateDocIds.slice(0, CROSS_ENCODER_LITE_TOPK).includes(doc.id))
-          )
+        ? await this.crossEncoder.rerank(question, rrfOrderedCandidates)
         : new Map<string, number>();
 
       const maxRrf = finalDocIds.length > 0

@@ -3,8 +3,9 @@ import { OllamaService } from "../ollama/ollama.service";
 import { RETRIEVAL_PROMPTS } from "./constants/retrieval-prompts";
 import { ConfigService } from "@nestjs/config";
 
-const CROSS_ENCODER_LITE_TOPK = 10;
-const CROSS_ENCODER_LITE_MAX_CHARS = 900;
+// Keeps the LLM prompt short: 10 passages x 900 chars (~12k chars) took 16-20 s per request.
+const CROSS_ENCODER_LITE_TOPK = 6;
+const CROSS_ENCODER_LITE_MAX_CHARS = 500;
 
 export class CrossEncoderReranker {
   private crossEncoderLiteEnabled = true;
@@ -22,6 +23,7 @@ export class CrossEncoderReranker {
     return this.crossEncoderLiteEnabled;
   }
 
+  /** `docs` must be ordered best first: only the first CROSS_ENCODER_LITE_TOPK are scored. */
   async rerank(
     question: string,
     docs: DomainDoc[],
@@ -30,7 +32,7 @@ export class CrossEncoderReranker {
       return new Map<string, number>();
     }
 
-    const compactDocs = docs.map((doc, index) => ({
+    const compactDocs = docs.slice(0, CROSS_ENCODER_LITE_TOPK).map((doc, index) => ({
       idx: index + 1,
       id: doc.id,
       title: String(doc.title || "").slice(0, 180),

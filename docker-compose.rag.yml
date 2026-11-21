@@ -23,3 +23,7 @@ services:
       DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT: "3500"
       DOCLING_SERVE_MAX_SYNC_WAIT: "3500"
     restart: unless-stopped
+
+networks:
+  default:
+    name: nutrition-coach-rag

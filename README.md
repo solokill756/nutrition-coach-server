@@ -120,8 +120,8 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
 
    The API downloads public HTTP(S) PDF and HTML sources before uploading their bytes to Docling. Downloads are
    limited to 50 MiB, 60 seconds and five redirects. The API checks the destination addresses on every request.
-   Compose publishes Docling on loopback. For an independently deployed Docling, restrict access to the API server
-   and keep `DOCLING_SERVE_ENABLE_REMOTE_SERVICES=false`.
+   Compose publishes Docling on loopback for an API running on the host. For an independently deployed Docling,
+   restrict access to the API server and keep `DOCLING_SERVE_ENABLE_REMOTE_SERVICES=false`.
 
 3. If the database still has the old `rag_embeddings` table with `vector(768)`, the server logs
    `rag_embeddings.embedding has dimension 768 but RAG_EMBEDDING_DIM=1024` at startup. Drop the table and restart
@@ -159,7 +159,7 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    | `RAG_EMBEDDING_MODEL` | `bge-m3` | Ollama model for RAG chunks and RAG queries, and the `model` label on `rag_embeddings` rows. Set it explicitly; `POSTGRES_EMBEDDING_MODEL` is not used for RAG |
    | `RAG_EMBEDDING_DIM` | `1024` | Must match `rag_embeddings.embedding` |
    | `FOOD_EMBEDDING_MODEL` | `nomic-embed-text` | Food semantic search model (unchanged) |
-   | `DOCLING_URL` | `http://localhost:5001` | docling-serve base URL |
+   | `DOCLING_URL` | `http://localhost:5001` | Use `http://docling:5001` when the API runs on the Compose network |
    | `DOCLING_TIMEOUT_MS` | `3600000` | Deadline for one document conversion. Keep the compose `DOCLING_SERVE_MAX_DOCUMENT_TIMEOUT` (seconds) at or below this value / 1000 |
    | `RAG_STORAGE_DIR` | `./storage/rag` | Uploaded PDFs and extracted images |
    | `TYPESAFE_API_KEY` | (empty) | Jev key for chunk tagging |
@@ -174,11 +174,13 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    | `RAG_INGEST_EMBED_BATCH_SIZE` | `1` | Texts per Ollama embedding request while ingesting (sent one after another). Small batches let user queries slip in between |
    | `RAG_QUERY_EMBED_TIMEOUT_MS` | `3000` | Max wait for a retrieval query embedding. Past it, that request uses BM25 only |
 
-6. When the server runs in Docker, mount `RAG_STORAGE_DIR` as a volume. It holds the source PDFs and the images
-   that the admin page shows next to image chunks, so it must not live inside the image or the container layer:
+6. When the server runs in Docker, start Docling with Compose first. Join the API container to the
+   `nutrition-coach-rag` network and set `DOCLING_URL=http://docling:5001`. Mount `RAG_STORAGE_DIR` as a volume
+   to persist source PDFs and extracted images.
 
    ```
-   docker run ... -e RAG_STORAGE_DIR=/data/rag -v rag-storage:/data/rag nutrition-coach-server
+   docker run ... --network nutrition-coach-rag -e DOCLING_URL=http://docling:5001 \
+     -e RAG_STORAGE_DIR=/data/rag -v rag-storage:/data/rag nutrition-coach-server
    ```
 
 ### Verify end to end

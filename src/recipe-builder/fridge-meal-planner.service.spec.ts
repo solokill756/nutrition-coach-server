@@ -301,6 +301,9 @@ describe("FridgeMealPlannerService safety filtering and references", () => {
     const s = createService();
     await s.service.generateDailyPlan(1, "2026-06-11");
     expect(s.userReferenceService.retrieve).toHaveBeenCalledTimes(1);
+    expect(s.userReferenceService.retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "staple_allocation" }),
+    );
     const calls = s.recipeBuilderService.generateRecipe.mock.calls;
     expect(calls).toHaveLength(4);
     const first = calls[0][3];

@@ -56,11 +56,12 @@ function baseCtx(overrides: Partial<RecipeGenerationContext> = {}): RecipeGenera
 }
 
 describe("buildRecipeGenerationRagQuery", () => {
-  it("includes condition-related min/max in the query, not all thresholds", () => {
+  it("includes the condition topic and meal slot without numeric targets", () => {
     const { question } = buildRecipeGenerationRagQuery(baseCtx());
 
-    expect(question).toContain("Condition-related nutrient limits");
-    expect(question).toContain("sodium min 500 mg max 1500 mg");
+    expect(question).toContain("Hypertension and sodium");
+    expect(question).toContain("lunch");
+    expect(question).not.toContain("1500");
     expect(question).not.toContain("protein min 80");
     expect(question).not.toContain("protein max 120");
   });
@@ -70,7 +71,7 @@ describe("buildRecipeGenerationRagQuery", () => {
       baseCtx({ conditionRelatedThresholds: [], healthDetailed: [] }),
     );
 
-    expect(question).not.toContain("Condition-related nutrient limits");
+    expect(question).not.toContain("sodium");
     expect(hints.intent).toBe("food_specific");
   });
 

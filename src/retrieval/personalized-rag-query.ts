@@ -1,151 +1,176 @@
 import type { RecipeGenerationContext, UserNutrientThreshold } from "../nutrition/user-context.service";
-import { formatThresholdMinMax } from "../nutrition/condition-related-thresholds";
 import type { RetrievalHints } from "./retrieval.types";
 
 const MAX_QUERY_CHARS = 2800;
+
+type ConditionTopic = { text: string; nutrients?: string[] };
+
+const CONDITION_TOPICS: Record<string, ConditionTopic> = {
+  hypertension: {
+    text: "Hypertension and sodium: read nutrition labels and choose lower-sodium foods",
+    nutrients: ["sodium"],
+  },
+  "high blood pressure": {
+    text: "High blood pressure and sodium: read nutrition labels and choose lower-sodium foods",
+    nutrients: ["sodium"],
+  },
+  diabetes: {
+    text: "Diabetes meal planning: diabetes plate method, carbohydrate counting and high-fiber foods to manage blood sugar",
+    nutrients: ["carbohydrates", "fiber"],
+  },
+  "type 1 diabetes": {
+    text: "Type 1 diabetes: carbohydrate portions and food labels for blood glucose management",
+    nutrients: ["carbohydrates"],
+  },
+  "type 2 diabetes": {
+    text: "Type 2 diabetes meal planning: diabetes plate method, carbohydrate counting and high-fiber foods",
+    nutrients: ["carbohydrates", "fiber"],
+  },
+  prediabetes: {
+    text: "Prediabetes: carbohydrate portions and high-fiber foods for blood glucose management",
+    nutrients: ["carbohydrates", "fiber"],
+  },
+  "pre diabetes": {
+    text: "Prediabetes: carbohydrate portions and high-fiber foods for blood glucose management",
+    nutrients: ["carbohydrates", "fiber"],
+  },
+  "kidney disease": {
+    text: "Kidney disease: food choices and nutrition for chronic kidney disease",
+  },
+  "heart disease": {
+    text: "Heart disease: choose heart-healthy foods and limit saturated fat",
+    nutrients: ["saturated fat"],
+  },
+  "high cholesterol": {
+    text: "High cholesterol: choose foods lower in saturated fat and higher in fiber",
+    nutrients: ["saturated fat", "fiber"],
+  },
+  thyroid: {
+    text: "Thyroid disorders: nutrition and food choices",
+  },
+};
+
+const NUTRIENT_LABELS: Record<string, string> = {
+  carbs: "carbohydrates",
+  saturatedfat: "saturated fat",
+  sugars: "sugar",
+};
+
+const GOAL_TOPICS: Record<string, string> = {
+  "weight loss": "healthy food choices for weight loss",
+  "lose weight": "healthy food choices for weight loss",
+  "weight gain": "nutrient-dense foods for weight gain",
+  "muscle gain": "protein-rich foods for muscle gain",
+  "plan meals": "meal planning",
+};
+
+const DIET_STYLES = new Set([
+  "dairy free", "gluten free", "halal", "keto", "kosher", "low carb",
+  "low sodium", "mediterranean", "pescatarian", "vegan", "vegetarian",
+]);
 
 export type PersonalizedRagHealthCondition = {
   conditionName: string;
 };
 
 export type PersonalizedRagQueryInput = {
-  /** Distinguishes extra keywords only; core query schema is shared. */
-  purpose: "recipe_generation" | "dashboard_suggestion";
+  purpose: "recipe_generation" | "dashboard_suggestion" | "staple_allocation";
+  mealSlot?: RecipeGenerationContext["mealSlot"];
   profile: {
-    sex?: string | null;
     dietType?: string | null;
     allergies?: string[];
-    fitnessLevel?: string | null;
   };
   goalTypes: string[];
   healthDetailed: PersonalizedRagHealthCondition[];
   conditionRelatedThresholds: UserNutrientThreshold[];
 };
 
-function squash(s: string): string {
-  return s.replace(/\s+/g, " ").trim();
+function label(value: string): string {
+  return value.replace(/_/g, " ").replace(/\s+/g, " ").trim();
 }
 
-function clip(s: string, max: number): string {
-  const t = squash(s);
-  if (t.length <= max) return t;
-  return `${t.slice(0, max - 1)}…`;
+function key(value: string): string {
+  return label(value.replace(/-/g, " ")).toLowerCase();
 }
 
-function uniqueNonEmpty(parts: string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of parts) {
-    const p = squash(raw);
-    if (!p) continue;
-    const k = p.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(p);
+function uniqueLabels(values: string[]): string[] {
+  const entries = new Map<string, string>();
+  for (const raw of values) {
+    const text = label(raw);
+    const normalized = key(text);
+    if (normalized && !entries.has(normalized)) entries.set(normalized, text);
   }
-  return out;
+  return [...entries.values()];
 }
 
-/**
- * Shared RAG retrieval query for Recipe Builder and Dashboard AI.
- * Uses static profile, goals, health conditions, allergies, and
- * condition-related nutrient min/max only (no diary intake or daily totals).
- */
+function topicFor<T>(topics: Record<string, T>, name: string): T | undefined {
+  return Object.prototype.hasOwnProperty.call(topics, name) ? topics[name] : undefined;
+}
+
+function nutrientLabel(nutrient: string): string {
+  const normalized = key(nutrient);
+  return topicFor(NUTRIENT_LABELS, normalized.replace(/ /g, "")) ?? normalized;
+}
+
+/** Build search topics. Numeric limits and daily intake belong in the generation prompt. */
 export function buildPersonalizedRagQuery(input: PersonalizedRagQueryInput): {
   question: string;
   hints: RetrievalHints;
 } {
-  const p = input.profile;
-  const conditionThresholds = input.conditionRelatedThresholds ?? [];
+  const allergies = uniqueLabels(input.profile.allergies ?? []);
+  const conditions = uniqueLabels(input.healthDetailed.map((condition) => condition.conditionName))
+    .sort((a, b) => key(a).localeCompare(key(b)));
+  const conditionTopics = conditions.map((condition): ConditionTopic =>
+    topicFor(CONDITION_TOPICS, key(condition)) ?? { text: `${condition}: nutrition and food choices` },
+  );
+  const coveredNutrients = new Set(conditionTopics.flatMap((topic) => topic.nutrients ?? []));
+  const nutrients = uniqueLabels((input.conditionRelatedThresholds ?? []).map(({ nutrient }) => nutrientLabel(nutrient)))
+    .filter((name) => name !== "calories");
+  const additionalNutrients = nutrients.filter((name) => !coveredNutrients.has(name));
 
-  const demographics = uniqueNonEmpty([p.sex ? `sex ${p.sex}` : ""]).join(", ");
-  const goalsPhrase = uniqueNonEmpty(input.goalTypes.map((g) => String(g || "").trim())).join("; ");
-  const allergiesPhrase = uniqueNonEmpty(p.allergies || []).join(", ");
-  const thresholdPhrase = uniqueNonEmpty(
-    conditionThresholds.map((t) => formatThresholdMinMax(t)),
-  ).join("; ");
-  const healthPhrase = uniqueNonEmpty(
-    input.healthDetailed.map((h) => String(h.conditionName || "").trim()),
-  ).join("; ");
+  const topics: string[] = [];
+  if (allergies.length) {
+    const subject = allergies.length === 1 ? "Food allergy" : "Food allergies";
+    topics.push(`${subject}: ${allergies.join(", ")}. Check the ingredient list, read allergen labels and prevent cross-contact`);
+  }
+  topics.push(...uniqueLabels(conditionTopics.map((topic) => topic.text)));
+  if (additionalNutrients.length) topics.push(`Food sources and choices for ${additionalNutrients.join(", ")}`);
 
-  const diet = p.dietType?.trim();
-  const fitness = p.fitnessLevel?.trim();
+  const hasConditionContext = conditions.length > 0 || nutrients.length > 0;
+  const diet = key(input.profile.dietType ?? "");
+  if (DIET_STYLES.has(diet)) topics.push(`${diet} food choices`);
+  if (!hasConditionContext && !allergies.length) {
+    topics.push(...uniqueLabels(input.goalTypes.map((goal) => topicFor(GOAL_TOPICS, key(goal)) ?? "")));
+  }
+  if (topics.length === 0) topics.push("Healthy food choices: vegetables, fruits, whole grains and protein foods for balanced meals");
 
-  const purposeLead =
-    input.purpose === "dashboard_suggestion"
-      ? "Daily personalized nutrition guidance based on user profile, active goals, health conditions, and condition-related nutrient limits only."
-      : "Personalized nutrition and safe cooking guidance based on user profile, active goals, health conditions, and condition-related nutrient limits only.";
-
-  const narrativeParts = [
-    purposeLead,
-    demographics ? `User metrics: ${demographics}.` : "",
-    goalsPhrase ? `Active goals (UserGoal): ${goalsPhrase}.` : "",
-    healthPhrase ? `Health conditions (UserHealthCondition): ${healthPhrase}.` : "",
-    allergiesPhrase ? `Allergies (AppUser): ${allergiesPhrase}.` : "",
-    diet ? `Diet type (AppUser): ${diet}.` : "",
-    fitness ? `Fitness level (AppUser): ${fitness}.` : "",
-    thresholdPhrase
-      ? `Condition-related nutrient limits (UserNutritionalThreshold): ${thresholdPhrase}.`
-      : "",
-  ].filter(Boolean);
-
-  const purposeKeywords =
-    input.purpose === "dashboard_suggestion"
-      ? ["dashboard", "daily suggestion", "practical action"]
-      : ["cooking", "recipe"];
-
-  const keywordTokens = uniqueNonEmpty([
-    "nutrition",
-    "diet",
-    "healthy eating",
-    ...purposeKeywords,
-    ...(p.allergies || []),
-    ...(diet ? [diet] : []),
-    ...conditionThresholds.map((t) => String(t.nutrient || "")),
-    ...input.healthDetailed.map((h) => String(h.conditionName || "")),
-    ...input.goalTypes,
-  ]);
-
-  const keywordLine = `Keywords: ${keywordTokens.join(", ")}.`;
-  let question = squash(`${narrativeParts.join(" ")} ${keywordLine}`);
-  question = clip(question, MAX_QUERY_CHARS);
-
-  const hasAllergies = (p.allergies?.length ?? 0) > 0;
-  const hasConditionThresholds = conditionThresholds.length > 0;
-  const hasHealthConditions = input.healthDetailed.length > 0;
-
-  let intent: NonNullable<RetrievalHints["intent"]>;
-  if (hasAllergies) {
-    intent = "safety";
-  } else if (input.purpose === "recipe_generation") {
-    intent = "food_specific";
-  } else if (hasConditionThresholds || hasHealthConditions) {
-    intent = "condition_specific";
-  } else {
-    intent = "general";
+  if (input.purpose === "recipe_generation") {
+    topics.push(input.mealSlot ? `Choose recipe ingredients for ${input.mealSlot}` : "Choose recipe ingredients");
+  } else if (input.purpose === "staple_allocation") {
+    topics.push("Choose ingredients across meals");
   }
 
-  return {
-    question,
-    hints: {
-      intent,
-      hasConditionContext: hasConditionThresholds || hasHealthConditions,
-    },
-  };
+  const joined = topics.join(". ") + ".";
+  const question = joined.length <= MAX_QUERY_CHARS
+    ? joined
+    : joined.slice(0, MAX_QUERY_CHARS - 1).trimEnd() + "…";
+
+  const intent = allergies.length ? "safety"
+    : input.purpose !== "dashboard_suggestion" ? "food_specific"
+    : hasConditionContext ? "condition_specific" : "general";
+  return { question, hints: { intent, hasConditionContext } };
 }
 
-/** Maps an assembled user context to the shared RAG query input. */
 export function ragQueryInputFromContext(
   ctx: RecipeGenerationContext,
   purpose: PersonalizedRagQueryInput["purpose"],
 ): PersonalizedRagQueryInput {
   return {
     purpose,
+    ...(purpose === "recipe_generation" ? { mealSlot: ctx.mealSlot } : {}),
     profile: {
-      sex: ctx.profile.sex,
       dietType: ctx.profile.dietType,
       allergies: ctx.profile.allergies,
-      fitnessLevel: ctx.profile.fitnessLevel,
     },
     goalTypes: ctx.goalsDetailed.map((g) => g.goalType),
     healthDetailed: ctx.healthDetailed,

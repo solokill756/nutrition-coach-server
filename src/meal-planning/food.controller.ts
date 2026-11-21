@@ -18,6 +18,7 @@ import { InjectRepository } from "@nestjs/typeorm";
 import { In, Repository } from "typeorm";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { FoodNutritionEntity } from "./entities/food-nutrition.entity";
+import { foodNutrientPredicates } from "./food-nutrient-filters";
 import { FoodService } from "./food.service";
 import { UsdaFoodDataService } from "./usda-food-data.service";
 import { CreateFoodDto } from "./dto/create-food.dto";
@@ -133,20 +134,20 @@ export class FoodController {
     @Query("mineOnly") mineOnly?: string,
     @Query("ids") ids?: string,
     @Query("allowExternalSearch") allowExternalSearch?: string,
+    @Query("nutrientFilters") nutrientFilters?: string,
   ) {
-    if (ids && ids.trim().length > 0) {
-      const idList = ids.split(",").map(Number).filter((n) => Number.isFinite(n) && n > 0);
-      if (idList.length > 0) {
-        const rows = await this.foodRepo.find({
-          where: { id: In(idList), delFlag: false },
-        });
-        return {
-          items: rows.map((r) => this.toApiItem(r)),
-          total: rows.length,
-          page: 1,
-          pageSize: rows.length,
-        };
-      }
+    const nutrientPredicates = foodNutrientPredicates(nutrientFilters);
+    const idList = (ids ?? "").split(",").map(Number).filter((n) => Number.isFinite(n) && n > 0);
+    if (idList.length > 0 && nutrientPredicates.length === 0) {
+      const rows = await this.foodRepo.find({
+        where: { id: In(idList), delFlag: false },
+      });
+      return {
+        items: rows.map((r) => this.toApiItem(r)),
+        total: rows.length,
+        page: 1,
+        pageSize: rows.length,
+      };
     }
 
     const take = Math.min(Math.max(pageSize, 1), 100);
@@ -183,14 +184,19 @@ export class FoodController {
     for (const part of parts) {
       qb.andWhere(part, params);
     }
+    if (idList.length) qb.andWhere("f.id IN (:...foodIds)", { foodIds: idList });
+    for (const { sql, params: bounds } of nutrientPredicates) {
+      qb.andWhere(sql, bounds);
+    }
     qb.orderBy("f.id", "ASC").skip(skip).take(take);
     const rows = await qb.getMany();
     const externalAllowed =
       allowExternalSearch === "true" ||
       allowExternalSearch === "1" ||
       String(allowExternalSearch).toLowerCase() === "true";
-    // External sources only fill an empty first page; later pages would re-fetch the same hits.
-    if (rows.length === 0 && hasSearch && !onlyMine && externalAllowed && Math.max(page, 1) === 1) {
+    // External fallback is for unfiltered searches and only fills the first page.
+    if (rows.length === 0 && hasSearch && !onlyMine && externalAllowed &&
+      nutrientPredicates.length === 0 && Math.max(page, 1) === 1) {
       const usdaFoods = await this.usda.searchAndSync(trimmedSearch, take);
       if (usdaFoods.length > 0) {
         return {
@@ -210,7 +216,7 @@ export class FoodController {
         };
       }
     }
-    const total = hasSearch ? rows.length : await qb.getCount();
+    const total = hasSearch && nutrientPredicates.length === 0 ? rows.length : await qb.getCount();
     return {
       items: rows.map((r) => this.toApiItem(r)),
       total,

@@ -15,6 +15,14 @@ describe("ConditionNutrientUnitService", () => {
     expect(service.normalizeAmount("saturatedFat", 6, "%kcal", 2000)).toEqual({ amount: 13.3, unit: "g" });
   });
 
+  it("converts a fiber density target to grams at the user's energy target", () => {
+    expect(service.normalizeAmount("fiber", 14, "g/1000kcal", 2024)).toEqual({ amount: 28.3, unit: "g" });
+  });
+
+  it("rejects a fiber density unit for other nutrients", () => {
+    expect(() => service.normalizeAmount("carbs", 14, "g/1000kcal", 2000)).toThrow("UNIT_INCOMPATIBLE");
+  });
+
   it("converts carbs percent calories to grams with 4 kcal/g", () => {
     expect(service.normalizeAmount("carbs", 50, "%kcal", 2000)).toEqual({ amount: 250, unit: "g" });
   });

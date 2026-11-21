@@ -75,6 +75,7 @@
 
 - The server retrieves evidence from JSONL files under ../nutrition-rag-data/data.
 - If Ollama is unavailable, the server returns a safe fallback summary with evidence IDs.
+- For condition-specific nutrition targets, see [Condition nutrient defaults](docs/condition-nutrient-rules.md).
 
 ## 7) Push Notification Environment
 

@@ -1,4 +1,12 @@
 import { NotFoundException } from "@nestjs/common";
+import { DashboardAiService } from "../dashboard/dashboard-ai.service";
+import { sampleRecipeContext } from "../nutrition/__fixtures__/llm-context.fixture";
+import { buildConditionRelatedThresholds } from "../nutrition/condition-related-thresholds";
+import { ConditionNutrientRuleApplierService } from "../nutrition/condition-nutrient-rule-applier.service";
+import { DEFAULT_CONDITION_NUTRIENT_RULES } from "../nutrition/condition-nutrient-rule-seed";
+import { ConditionNutrientUnitService } from "../nutrition/condition-nutrient-unit.service";
+import { NutritionCalculatorService } from "../nutrition/nutrition-calculator.service";
+import { UserThresholdBuilderService } from "../nutrition/user-threshold-builder.service";
 import { OnboardingService } from "./onboarding.service";
 
 function createService() {
@@ -38,7 +46,7 @@ function createService() {
   const service = new OnboardingService(
     dataSource, nutritionCalculator, thresholdBuilder, thresholdPersistence, userRepo, goalRepo, healthRepo, thresholdRepo,
   );
-  return { service, nutritionCalculator, userRepo, goalRepo, healthRepo, thresholdRepo, thresholdBuilder };
+  return { service, nutritionCalculator, userRepo, goalRepo, healthRepo, thresholdRepo, thresholdBuilder, thresholdPersistence };
 }
 
 describe("OnboardingService", () => {
@@ -73,5 +81,72 @@ describe("OnboardingService", () => {
       gender: "female", age: 22, heightCm: 160, currentWeightKg: 55, displayName: "A",
     } as any);
     expect(out.saved).toBe(true);
+  });
+
+  it("passes seeded diabetes thresholds to persistence and the Dashboard prompt", async () => {
+    const { service, nutritionCalculator, userRepo, goalRepo, healthRepo, thresholdBuilder, thresholdPersistence } = createService();
+    const rules = DEFAULT_CONDITION_NUTRIENT_RULES
+      .filter((rule) => rule.conditionKey === "diabetes")
+      .map((rule, i) => ({ ...rule, id: i + 1 }));
+    const units = new ConditionNutrientUnitService();
+    const builder = new UserThresholdBuilderService(
+      new NutritionCalculatorService(),
+      new ConditionNutrientRuleApplierService(units),
+      { find: jest.fn().mockResolvedValue(rules) } as never,
+    );
+    thresholdBuilder.build.mockImplementation(builder.build.bind(builder));
+    nutritionCalculator.computeNutritionPlan.mockReturnValue({
+      bmr: 1800, tdee: 3000, targetCalories: 3000,
+      proteinG: 150, carbsG: 375, fatG: 100,
+      proteinPercent: 20, carbsPercent: 50, fatPercent: 30,
+    });
+    userRepo.findOne.mockResolvedValue({
+      id: 1, delFlag: false, isProfileComplete: false, displayName: "Test user",
+      sex: "female", age: 35, height: 165, weight: 70, fitnessLevel: "moderate",
+    });
+    goalRepo.findOne.mockResolvedValue({ goalType: "maintain_weight" });
+    healthRepo.find.mockResolvedValue([{ conditionName: "diabetes" }]);
+
+    await service.complete(1, {});
+
+    const [, userId, thresholds] = thresholdPersistence.replaceUserThresholds.mock.calls[0];
+    expect(userId).toBe(1);
+    expect(thresholds).toEqual(expect.arrayContaining([
+      expect.objectContaining({ nutrient: "fiber", minAmount: 42, unit: "g", origin: "admin_rule", sourceConditionKey: "diabetes" }),
+      expect.objectContaining({ nutrient: "sodium", maxAmount: 2300, unit: "mg", origin: "admin_rule", sourceConditionKey: "diabetes" }),
+      expect.objectContaining({ nutrient: "sugars", origin: "system" }),
+    ]));
+
+    const conditionRelatedThresholds = buildConditionRelatedThresholds(
+      ["diabetes"], thresholds, rules, (nutrient) => units.normalizeNutrient(nutrient),
+    );
+    const chat = jest.fn().mockResolvedValue('{"title":"Lunch","message":"Plan lunch."}');
+    const retrieve = jest.fn().mockResolvedValue({ text: "None.", used: [] });
+    const dashboard = new DashboardAiService(
+      { chat } as never,
+      { retrieve } as never,
+    );
+    await dashboard.buildAiSuggestion({
+      userContext: sampleRecipeContext({
+        thresholds,
+        conditionRelatedThresholds,
+        healthDetailed: [{ conditionName: "diabetes" }],
+        dailyTargetCalories: 3000,
+      }),
+      calories: { target: 3000, consumed: 2100, burned: 0, net: 2100, remaining: 900, status: "on_track" },
+      macros: { protein: { current: 40, target: 90 }, carbs: { current: 100, target: 200 }, fat: { current: 30, target: 60 } },
+      exercise: { caloriesBurned: 0, minutes: 0, workoutCount: 0 },
+      water: { currentMl: 400, targetMl: 2200 },
+      remaining: 900,
+      alerts: [],
+    });
+    expect(conditionRelatedThresholds).toHaveLength(2);
+    expect(retrieve).toHaveBeenCalledWith(
+      expect.objectContaining({ purpose: "dashboard_suggestion", conditionRelatedThresholds }),
+      { skipCrossEncoder: true },
+    );
+    expect(chat.mock.calls[0][0][1].content).toContain('"healthConditions":["diabetes"]');
+    expect(chat.mock.calls[0][0][1].content).toContain("fiber min 42 g");
+    expect(chat.mock.calls[0][0][1].content).toContain("sodium max 2300 mg");
   });
 });

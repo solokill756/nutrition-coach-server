@@ -5,7 +5,7 @@ function build(stored: unknown = null) {
   const user: any = { id: 7, delFlag: false, displayName: "Lan", mealSplits: stored };
   const appUserRepo: any = {
     findOne: jest.fn(async () => user),
-    save: jest.fn(async (u: any) => u),
+    update: jest.fn(async (_id: number, changes: object) => Object.assign(user, changes)),
   };
   const userContextService: any = { invalidateUserCache: jest.fn() };
   const config: any = { get: jest.fn() };
@@ -25,7 +25,7 @@ describe("AuthService meal splits", () => {
     const split = { breakfast: 20, lunch: 40, dinner: 35, snack: 5 };
     await service.patchProfile(7, { mealSplits: split } as any);
     expect(user.mealSplits).toEqual(split);
-    expect(appUserRepo.save).toHaveBeenCalled();
+    expect(appUserRepo.update).toHaveBeenCalledWith(7, { mealSplits: split, updatedAt: expect.any(Date) });
     expect(userContextService.invalidateUserCache).toHaveBeenCalledWith(7);
   });
 
@@ -48,7 +48,7 @@ describe("AuthService meal splits", () => {
       errorKey: "users.errors.invalidMealSplits",
       message: "Meal split must add up to 100%.",
     });
-    expect(appUserRepo.save).not.toHaveBeenCalled();
+    expect(appUserRepo.update).not.toHaveBeenCalled();
     expect(userContextService.invalidateUserCache).not.toHaveBeenCalled();
   });
 

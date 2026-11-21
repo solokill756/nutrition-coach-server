@@ -13,7 +13,7 @@ import * as bcrypt from "bcrypt";
 import { createHash, randomBytes, randomUUID } from "crypto";
 import { cert, getApps, initializeApp } from "firebase-admin/app";
 import { Auth, DecodedIdToken, getAuth } from "firebase-admin/auth";
-import { MoreThan, QueryFailedError, Raw, Repository } from "typeorm";
+import { EntityManager, MoreThan, QueryFailedError, Raw, Repository } from "typeorm";
 import {
   AuthNutritionalThreshold,
   AuthTokens,
@@ -279,10 +279,12 @@ export class AuthService {
 
   private async resolveCurrentWeightKg(
     user: AppUserEntity,
+    manager?: EntityManager,
   ): Promise<number | null> {
     const latestRows = await this.weightService.historyDescending(
       Number(user.id),
       1,
+      manager,
     );
     const latestWeight =
       latestRows.length > 0 ? Number(latestRows[0].weightKg) : NaN;
@@ -296,35 +298,30 @@ export class AuthService {
     userId: number,
     dto: UpdateUserGoalDto,
   ): Promise<AuthUser> {
-    const user = await this.appUserRepo.findOne({
-      where: { id: userId, delFlag: false },
-    });
-    if (!user) {
-      throw this.unauthorized("auth.errors.userNotFound");
-    }
-    if (!user.isProfileComplete) {
-      throw this.unprocessable("auth.errors.profileIncomplete");
-    }
-
-    const slug = this.nutritionCalculator.normalizeGoalType(dto.goalType);
-
-    const conditionTypes = await this.loadActiveConditionTypes(userId);
-    const currentWeightKg = await this.resolveCurrentWeightKg(user);
-    const plan = this.nutritionCalculator.computeNutritionPlan({
-      gender: user.sex,
-      age: user.age,
-      heightCm: user.height,
-      currentWeightKg,
-      activityLevel: user.fitnessLevel,
-      goalType: slug,
-    });
-    // A user-chosen target keeps the plan's macro percentages; grams scale with it.
-    const adjustedCalories = dto.targetCalories ?? plan.targetCalories;
-    const gramScale =
-      plan.targetCalories > 0 ? adjustedCalories / plan.targetCalories : 1;
-    const scaleG = (g: number) => Math.round(g * gramScale * 10) / 10;
-
     await this.goalRepo.manager.transaction(async (manager) => {
+      const user = await manager.findOne(AppUserEntity, {
+        where: { id: userId, delFlag: false },
+        lock: { mode: "pessimistic_write" },
+      });
+      if (!user) throw this.unauthorized("auth.errors.userNotFound");
+      if (!user.isProfileComplete) throw this.unprocessable("auth.errors.profileIncomplete");
+
+      const slug = this.nutritionCalculator.normalizeGoalType(dto.goalType);
+      const health = await manager.find(UserHealthConditionEntity, { where: { userId, isActive: true } });
+      const currentWeightKg = await this.resolveCurrentWeightKg(user, manager);
+      const plan = this.nutritionCalculator.computeNutritionPlan({
+        gender: user.sex,
+        age: user.age,
+        heightCm: user.height,
+        currentWeightKg,
+        activityLevel: user.fitnessLevel,
+        goalType: slug,
+      });
+      // A user-chosen target keeps the plan's macro percentages; grams scale with it.
+      const adjustedCalories = dto.targetCalories ?? plan.targetCalories;
+      const gramScale = plan.targetCalories > 0 ? adjustedCalories / plan.targetCalories : 1;
+      const scaleG = (g: number) => Math.round(g * gramScale * 10) / 10;
+
       await manager.update(
         UserGoalEntity,
         { userId, isActive: true },
@@ -342,12 +339,12 @@ export class AuthService {
           carbsPercent: plan.carbsPercent,
           fatPercent: plan.fatPercent,
         },
-        conditionTypes,
+        conditionTypes: health.map((row) => row.conditionName),
         gender: user.sex ?? null,
         allowAutoRebalance: true,
         bodyWeightKg: currentWeightKg ?? undefined,
-      });
-      await this.thresholdPersistence.replaceUserThresholds(manager, userId, thresholdRows);
+      }, manager);
+      await this.thresholdPersistence.replaceUserThresholds(manager, userId, thresholdRows, { preserveCustom: true });
 
       await manager.save(
         manager.create(UserGoalEntity, {
@@ -364,13 +361,6 @@ export class AuthService {
     return this.me(userId);
   }
 
-  private async loadActiveConditionTypes(userId: number): Promise<string[]> {
-    const rows = await this.healthRepo.find({
-      where: { userId, isActive: true },
-    });
-    return rows.map((r) => r.conditionName);
-  }
-
   async patchProfile(userId: number, dto: UpdateProfileDto): Promise<AuthUser> {
     const user = await this.appUserRepo.findOne({
       where: { id: userId, delFlag: false },
@@ -380,13 +370,12 @@ export class AuthService {
       throw this.unauthorized("auth.errors.userNotFound");
     }
 
-    let changed = false;
+    const changes: Partial<AppUserEntity> = {};
 
     if (dto.displayName !== undefined) {
       const name = dto.displayName.trim();
       if (name.length >= 2 && name !== user.displayName) {
-        user.displayName = name;
-        changed = true;
+        changes.displayName = name;
       }
     }
 
@@ -398,8 +387,7 @@ export class AuthService {
         if (existing && Number(existing.id) !== Number(user.id)) {
           throw this.conflict("auth.errors.emailAlreadyRegistered");
         }
-        user.email = email;
-        changed = true;
+        changes.email = email;
       }
     }
 
@@ -407,33 +395,29 @@ export class AuthService {
       if (dto.newPassword.length < 8) {
         throw this.unprocessable("auth.errors.weakPassword");
       }
-      user.passwordHash = await this.hashPassword(dto.newPassword);
-      user.passwordChangedAt = new Date();
-      changed = true;
+      changes.passwordHash = await this.hashPassword(dto.newPassword);
+      changes.passwordChangedAt = new Date();
     }
 
     if (dto.avatarUrl !== undefined) {
       const raw = dto.avatarUrl.trim();
-      user.avatarUrl = raw.length > 0 ? raw : null;
-      changed = true;
+      changes.avatarUrl = raw.length > 0 ? raw : null;
     }
 
     let mealSplitsChanged = false;
     if (dto.mealSplits !== undefined) {
       if (dto.mealSplits === null) {
-        user.mealSplits = null;
+        changes.mealSplits = null;
       } else {
         const splits = validateMealSplits(dto.mealSplits);
         if (!splits) throw this.unprocessable("users.errors.invalidMealSplits");
-        user.mealSplits = splits;
+        changes.mealSplits = splits;
       }
-      changed = true;
       mealSplitsChanged = true;
     }
 
-    if (changed) {
-      user.updatedAt = new Date();
-      await this.appUserRepo.save(user);
+    if (Object.keys(changes).length > 0) {
+      await this.appUserRepo.update(user.id, { ...changes, updatedAt: new Date() });
     }
     // Recipe context caches the split for 5 minutes; the next recipe must use the new one.
     if (mealSplitsChanged) this.userContextService.invalidateUserCache(userId);

@@ -1,6 +1,6 @@
 import { Injectable } from "@nestjs/common";
 import { InjectRepository } from "@nestjs/typeorm";
-import { In, Repository } from "typeorm";
+import { EntityManager, In, Repository } from "typeorm";
 import { ConditionNutrientRuleApplierService } from "./condition-nutrient-rule-applier.service";
 import { ConditionNutrientRuleEntity } from "./entities/condition-nutrient-rule.entity";
 import { NutritionCalculatorService, MacroBreakdown } from "./nutrition-calculator.service";
@@ -22,7 +22,7 @@ export class UserThresholdBuilderService {
     gender?: string | null;
     allowAutoRebalance: boolean;
     bodyWeightKg?: number;
-  }) {
+  }, manager?: EntityManager) {
     const base = this.calculator.buildDefaultThresholds(
       input.userId,
       input.targetCalories,
@@ -30,9 +30,10 @@ export class UserThresholdBuilderService {
       input.gender,
     );
     const conditionKeys = input.conditionTypes.map((item) => item.trim().toLowerCase()).filter(Boolean);
+    const ruleRepo = manager?.getRepository(ConditionNutrientRuleEntity) ?? this.ruleRepo;
     const rules = conditionKeys.length === 0
       ? []
-      : await this.ruleRepo.find({ where: { conditionKey: In(conditionKeys), isActive: true } });
+      : await ruleRepo.find({ where: { conditionKey: In(conditionKeys), isActive: true } });
     return this.applier.applyRules({
       targetCalories: input.targetCalories,
       baseThresholds: base as never,

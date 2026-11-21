@@ -13,20 +13,35 @@ import { AuthService } from "../auth/auth.service";
 import { JwtAuthGuard } from "../auth/jwt-auth.guard";
 import { DashboardEventBus } from "../dashboard/dashboard-event-bus";
 import { resolveClientDateKey } from "../common/date/calendar-day-bounds";
+import { UpdateUserHealthProfileDto } from "./dto/update-health-profile.dto";
 import { UpdateProfileDto } from "./dto/update-profile.dto";
 import { UpdateUserGoalDto } from "./dto/update-user-goal.dto";
+import { UserHealthProfileService } from "./user-health-profile.service";
 
 @Controller("users")
 export class UsersController {
   constructor(
     private readonly authService: AuthService,
     private readonly dashboardEventBus: DashboardEventBus,
+    private readonly healthProfile: UserHealthProfileService,
   ) {}
 
   @UseGuards(JwtAuthGuard)
   @Delete("me")
   async deleteMe(@Req() req: Request & { user: { userId: number } }) {
     return this.authService.deleteOwnAccount(req.user.userId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch("health-profile")
+  async patchHealthProfile(
+    @Req() req: Request & { user: { userId: number } },
+    @Body() dto: UpdateUserHealthProfileDto,
+  ) {
+    const { userId } = req.user;
+    await this.healthProfile.update(userId, dto);
+    this.dashboardEventBus.emitDiaryChanged(userId, resolveClientDateKey(undefined, 0), { allDates: true });
+    return this.authService.me(userId);
   }
 
   @UseGuards(JwtAuthGuard)

@@ -3,6 +3,7 @@ import { Injectable } from "@nestjs/common";
 export type DiaryChangedEvent = {
   userId: number;
   dateKey: string;
+  allDates?: true;
 };
 
 export type DiaryChangedListener = (event: DiaryChangedEvent) => void;
@@ -19,8 +20,8 @@ export class DashboardEventBus {
     this.listeners.delete(listener);
   }
 
-  emitDiaryChanged(userId: number, dateKey: string): void {
-    const event: DiaryChangedEvent = { userId, dateKey };
+  emitDiaryChanged(userId: number, dateKey: string, options?: { allDates: true }): void {
+    const event: DiaryChangedEvent = { userId, dateKey, ...options };
     this.listeners.forEach((listener) => {
       try {
         listener(event);

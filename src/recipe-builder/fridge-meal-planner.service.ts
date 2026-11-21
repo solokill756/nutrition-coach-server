@@ -99,7 +99,7 @@ export class FridgeMealPlannerService {
       );
     }
     const references = await this.userReferences.retrieve(
-      ragQueryInputFromContext(ctx, "recipe_generation"),
+      ragQueryInputFromContext(ctx, "staple_allocation"),
     );
     return { safe, removedWarnings: removed.map((r) => r.reason), references };
   }

@@ -5,7 +5,7 @@ import type { RetrievalResult } from "./retrieval.types";
 
 const input: PersonalizedRagQueryInput = {
   purpose: "dashboard_suggestion",
-  profile: { sex: "male", dietType: null, allergies: [], fitnessLevel: "moderate" },
+  profile: { dietType: null, allergies: [] },
   goalTypes: ["weight_loss"],
   healthDetailed: [],
   conditionRelatedThresholds: [],

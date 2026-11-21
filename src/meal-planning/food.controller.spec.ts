@@ -208,3 +208,56 @@ describe("FoodController external search", () => {
     expect(usda.searchAndSync).not.toHaveBeenCalled();
   });
 });
+
+describe("FoodController nutrient filters", () => {
+  const request = { user: { userId: 7 } };
+
+  it("combines inclusive nutrient bounds and name search before pagination", async () => {
+    const { controller, foodRepo } = createController();
+    const qb = createQb([{ id: 41, protein: 20, sugars: 5 }], 21);
+    const calls: string[] = [];
+    qb.andWhere.mockImplementation(() => { calls.push("filter"); return qb; });
+    qb.skip.mockImplementation(() => { calls.push("skip"); return qb; });
+    foodRepo.createQueryBuilder.mockReturnValueOnce(qb);
+
+    const page = await controller.list(
+      request as any, 2, 20, undefined, "oats", undefined, undefined, "true",
+      '{"proteinG":{"min":20},"sugarsG":{"max":5}}',
+    );
+
+    expect(qb.andWhere).toHaveBeenCalledWith("f.foodName ILIKE :q", { q: "%oats%" });
+    expect(qb.andWhere).toHaveBeenCalledWith("f.protein >= :proteinGMin", { proteinGMin: 20 });
+    expect(qb.andWhere).toHaveBeenCalledWith("f.sugars <= :sugarsGMax", { sugarsGMax: 5 });
+    expect(calls).toEqual(["filter", "filter", "filter", "skip"]);
+    expect(qb.skip).toHaveBeenCalledWith(20);
+    expect(page).toMatchObject({ page: 2, total: 21, items: [{ proteinG: 20, sugarsG: 5 }] });
+  });
+
+  it("does not return unfiltered external results when a filtered first page is empty", async () => {
+    const { controller, foodRepo, foodService, usda } = createController();
+    const qb = createQb();
+    foodRepo.createQueryBuilder.mockReturnValueOnce(qb);
+    const page = await controller.list(
+      request as any, 1, 20, undefined, "oats", undefined, undefined, "true", '{"sugarsG":{"max":0}}',
+    );
+    expect(qb.andWhere).toHaveBeenCalledWith("f.sugars <= :sugarsGMax", { sugarsGMax: 0 });
+    expect(usda.searchAndSync).not.toHaveBeenCalled();
+    expect(foodService.searchFood).not.toHaveBeenCalled();
+    expect(page).toMatchObject({ items: [], total: 0 });
+  });
+
+  it.each([
+    '{"proteinG":{"min":5,"max":4}}',
+    '{"proteinG":{"min":"1"}}',
+    '{"sodiumMg":{"max":-1}}',
+    '{"unknown":{"min":5}}',
+    '{"proteinG":{"min":1e400}}',
+    '[]',
+  ])("rejects invalid filter %s before querying", async (filter) => {
+    const { controller, foodRepo } = createController();
+    await expect(controller.list(
+      request as any, 1, 20, undefined, undefined, undefined, undefined, undefined, filter,
+    )).rejects.toMatchObject({ status: 400 });
+    expect(foodRepo.createQueryBuilder).not.toHaveBeenCalled();
+  });
+});

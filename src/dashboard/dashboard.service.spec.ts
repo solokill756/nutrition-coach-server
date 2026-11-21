@@ -85,6 +85,7 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
     assembleRecipeGenerationContext: jest.fn().mockResolvedValue(userContext),
   } as unknown as UserContextService;
   const dashboardAiService = new DashboardAiService(ollamaService, userReferenceService);
+  const eventBus = new DashboardEventBus();
 
   const service = new DashboardService(
     userRepo as never,
@@ -101,7 +102,7 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
     new DashboardAlertService(),
     userContextService,
     dashboardAiService,
-    new DashboardEventBus(),
+    eventBus,
   );
 
   return {
@@ -111,6 +112,7 @@ function createService(chat: jest.Mock<Promise<string>, [{ role: "system" | "use
     userReferenceService: userReferenceService as unknown as { retrieve: jest.Mock },
     userContextService: userContextService as unknown as { assembleRecipeGenerationContext: jest.Mock },
     dashboardAiService,
+    eventBus,
   };
 }
 
@@ -178,6 +180,25 @@ describe("DashboardService AI suggestion", () => {
 
     expect(userContextService.assembleRecipeGenerationContext).toHaveBeenCalledWith(1, "2026-05-22", "breakfast", 420);
     expect(buildSpy.mock.calls[0][0].userContext).toBe(userContext);
+  });
+
+  it("refreshes suggestions after a profile change and does not cache an in-flight stale response", async () => {
+    const { service, eventBus, dashboardAiService } = createService(jest.fn());
+    const fresh = { title: "New profile", message: "Use the current profile." };
+    const stale = { title: "Old profile", message: "Use the previous profile." };
+    let finishStale!: (value: typeof stale) => void;
+    const oldResponse = new Promise<typeof stale>((resolve) => { finishStale = resolve; });
+    jest.spyOn(dashboardAiService, "buildAiSuggestion")
+      .mockReturnValueOnce(oldResponse)
+      .mockResolvedValue(fresh);
+
+    const pending = service.getTodaySuggestion(1, "2026-05-22");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    eventBus.emitDiaryChanged(1, "2026-05-23", { allDates: true });
+    expect(await service.getTodaySuggestion(1, "2026-05-22")).toEqual(fresh);
+    finishStale(stale);
+    await pending;
+    expect(await service.getTodaySuggestion(1, "2026-05-22")).toEqual(fresh);
   });
 
   it("sends the coach the shared user block (age) and dashboard data, no name or alert bookkeeping", async () => {

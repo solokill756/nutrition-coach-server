@@ -180,6 +180,7 @@ export class UserContextService implements OnModuleDestroy {
   /** Invalidate cached static context for a user (call after profile/goal/health updates). */
   invalidateUserCache(userId: number): void {
     this.staticCache.delete(userId);
+    this.pendingLoads.delete(userId);
   }
 
   /** Touch userId in LRU order (move to end = most recently used). */
@@ -232,12 +233,14 @@ export class UserContextService implements OnModuleDestroy {
 
     try {
       const data = await promise;
-      this.staticCache.set(userId, { data, expiresAt: Date.now() + USV_STATIC_TTL_MS });
-      this.touchLru(userId);
-      this.evictIfNeeded();
+      if (this.pendingLoads.get(userId) === promise) {
+        this.staticCache.set(userId, { data, expiresAt: Date.now() + USV_STATIC_TTL_MS });
+        this.touchLru(userId);
+        this.evictIfNeeded();
+      }
       return data;
     } finally {
-      this.pendingLoads.delete(userId);
+      if (this.pendingLoads.get(userId) === promise) this.pendingLoads.delete(userId);
     }
   }
 

@@ -91,6 +91,7 @@ export interface DashboardTodayResponse {
 @Injectable()
 export class DashboardService implements OnModuleDestroy {
   private readonly suggestionCache = new NodeCache({ stdTTL: 0, checkperiod: 120 });
+  private readonly pendingSuggestions = new Map<string, Promise<DashboardAiSuggestion>>();
   private readonly invalidateFn: (event: DiaryChangedEvent) => void;
 
   constructor(
@@ -117,7 +118,9 @@ export class DashboardService implements OnModuleDestroy {
     private readonly dashboardAiService: DashboardAiService,
     private readonly dashboardEventBus: DashboardEventBus,
   ) {
-    this.invalidateFn = (event) => this.invalidateSuggestionCache(event.userId, event.dateKey);
+    this.invalidateFn = (event) => this.invalidateSuggestionCache(
+      event.userId, event.allDates ? undefined : event.dateKey,
+    );
     this.dashboardEventBus.onDiaryChanged(this.invalidateFn);
   }
 
@@ -126,8 +129,16 @@ export class DashboardService implements OnModuleDestroy {
     this.suggestionCache.close();
   }
 
-  invalidateSuggestionCache(userId: number, dateKey: string): void {
-    this.suggestionCache.del(`suggestion_${userId}_${dateKey}`);
+  invalidateSuggestionCache(userId: number, dateKey?: string): void {
+    const prefix = `suggestion_${userId}_`;
+    const keys = dateKey === undefined
+      ? [...new Set([...this.suggestionCache.keys(), ...this.pendingSuggestions.keys()])]
+        .filter((key) => key.startsWith(prefix))
+      : [prefix + dateKey];
+    for (const key of keys) {
+      this.suggestionCache.del(key);
+      this.pendingSuggestions.delete(key);
+    }
   }
 
   async getTodayDashboard(
@@ -261,6 +272,24 @@ export class DashboardService implements OnModuleDestroy {
       return cached;
     }
 
+    const pending = this.pendingSuggestions.get(cacheKey);
+    if (pending) return pending;
+    const request = this.buildTodaySuggestion(userId, dateKey, tzOffsetMinutes);
+    this.pendingSuggestions.set(cacheKey, request);
+    try {
+      const suggestion = await request;
+      if (this.pendingSuggestions.get(cacheKey) === request) {
+        this.suggestionCache.set(cacheKey, suggestion, this.secondsUntilEndOfDay());
+      }
+      return suggestion;
+    } finally {
+      if (this.pendingSuggestions.get(cacheKey) === request) this.pendingSuggestions.delete(cacheKey);
+    }
+  }
+
+  private async buildTodaySuggestion(
+    userId: number, dateKey: string, tzOffsetMinutes: number,
+  ): Promise<DashboardAiSuggestion> {
     const base = await this.loadDashboardBase(userId, dateKey, tzOffsetMinutes);
 
     const userContext = await this.userContextService.assembleRecipeGenerationContext(
@@ -298,12 +327,7 @@ export class DashboardService implements OnModuleDestroy {
       alerts: base.alerts,
     };
 
-    const suggestion = await this.dashboardAiService.buildAiSuggestion(ctx);
-
-    const ttl = this.secondsUntilEndOfDay();
-    this.suggestionCache.set(cacheKey, suggestion, ttl);
-
-    return suggestion;
+    return this.dashboardAiService.buildAiSuggestion(ctx);
   }
 
   private secondsUntilEndOfDay(): number {

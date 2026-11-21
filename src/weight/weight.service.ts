@@ -278,8 +278,9 @@ export class WeightService {
     return n > 0;
   }
 
-  async historyDescending(userId: number, limit: number): Promise<WeightEntity[]> {
-    return this.weightRepo.find({
+  async historyDescending(userId: number, limit: number, manager?: EntityManager): Promise<WeightEntity[]> {
+    const repo = manager?.getRepository(WeightEntity) ?? this.weightRepo;
+    return repo.find({
       where: { userId, delFlag: false },
       order: { recordedOn: "DESC", recordedAt: "DESC" },
       take: limit,
@@ -294,10 +295,11 @@ export class WeightService {
     const userRepo = manager.getRepository(AppUserEntity);
     const goalRepo = manager.getRepository(UserGoalEntity);
 
-    const [user, activeGoal] = await Promise.all([
-      userRepo.findOne({ where: { id: userId, delFlag: false } }),
-      goalRepo.findOne({ where: { userId, isActive: true } }),
-    ]);
+    const user = await userRepo.findOne({
+      where: { id: userId, delFlag: false },
+      lock: { mode: "pessimistic_write" },
+    });
+    const activeGoal = await goalRepo.findOne({ where: { userId, isActive: true } });
     if (!user || !activeGoal) {
       throw new BadRequestException(
         "Cannot recalculate nutrition targets: no active goal found for user",
@@ -355,7 +357,7 @@ export class WeightService {
       gender: user.sex ?? null,
       allowAutoRebalance: true,
       bodyWeightKg: currentWeightKg ?? undefined,
-    });
-    await this.thresholdPersistence.replaceUserThresholds(manager, userId, rows);
+    }, manager);
+    await this.thresholdPersistence.replaceUserThresholds(manager, userId, rows, { preserveCustom: true });
   }
 }

@@ -15,6 +15,7 @@ export class UserThresholdPersistenceService {
     manager: EntityManager,
     userId: number,
     rows: Array<Partial<UserNutritionalThresholdEntity>>,
+    options?: { preserveCustom: true },
   ): Promise<void> {
     const thresholdRepo = manager.getRepository(UserNutritionalThresholdEntity);
     const existing = await thresholdRepo.find({ where: { userId } });
@@ -26,7 +27,8 @@ export class UserThresholdPersistenceService {
     const now = new Date();
     const touched = new Set<string>();
     const toSave: UserNutritionalThresholdEntity[] = [];
-    const deduped = this.dedupeByNutrient(rows);
+    const rebuilt = options?.preserveCustom ? this.preserveCustomThresholds(rows, existing) : rows;
+    const deduped = this.dedupeByNutrient(rebuilt);
 
     for (const input of deduped) {
       const nutrient = String(input.nutrient ?? "").trim();
@@ -75,6 +77,39 @@ export class UserThresholdPersistenceService {
     if (toSave.length > 0) {
       await thresholdRepo.save(toSave);
     }
+  }
+
+  private preserveCustomThresholds(
+    calculated: Partial<UserNutritionalThresholdEntity>[],
+    previous: UserNutritionalThresholdEntity[],
+  ): Partial<UserNutritionalThresholdEntity>[] {
+    const rows = new Map(calculated.map((row) => [
+      this.units.normalizeNutrient(row.nutrient ?? ""),
+      { ...row, sourceConditionKey: row.sourceConditionKey ?? null, sourceRuleId: row.sourceRuleId ?? null },
+    ]));
+
+    for (const row of previous) {
+      if (!row.isActive) continue;
+      const unit = row.previousCustomUnit
+        ?? (row.origin === "user_custom" || (row.isCustomized && row.origin !== "admin_rule") ? row.unit : null);
+      if (!unit) continue;
+      const minAmount = row.previousCustomUnit ? row.previousCustomMinAmount : row.minAmount;
+      const maxAmount = row.previousCustomUnit ? row.previousCustomMaxAmount : row.maxAmount;
+      const key = this.units.normalizeNutrient(row.nutrient);
+      const next = rows.get(key);
+      if (next?.origin === "admin_rule") {
+        Object.assign(next, {
+          isCustomized: true, previousCustomMinAmount: minAmount, previousCustomMaxAmount: maxAmount, previousCustomUnit: unit,
+        });
+      } else {
+        rows.set(key, {
+          ...row, unit, minAmount, maxAmount, origin: "user_custom", isCustomized: true,
+          sourceConditionKey: null, sourceRuleId: null,
+          previousCustomMinAmount: null, previousCustomMaxAmount: null, previousCustomUnit: null,
+        });
+      }
+    }
+    return [...rows.values()];
   }
 
   private dedupeByNutrient(

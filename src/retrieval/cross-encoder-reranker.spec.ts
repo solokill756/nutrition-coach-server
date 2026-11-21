@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { OllamaService } from "../ollama/ollama.service";
 import { CrossEncoderReranker } from "./cross-encoder-reranker";
@@ -33,7 +34,7 @@ describe("CrossEncoderReranker", () => {
 
     // #37: the LLM rerank took 16-20 s; past the timeout the existing order is used.
     it("gives up after 5 s by default and returns no scores", async () => {
-      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      const warn = jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
       const chat = jest.fn(() => new Promise<string>(() => undefined));
       const reranker = new CrossEncoderReranker({ chat } as unknown as OllamaService, config);
       const result = reranker.rerank("salt", [doc("a")]);
@@ -44,11 +45,11 @@ describe("CrossEncoderReranker", () => {
       expect(settled).toBe(false);
       await jest.advanceTimersByTimeAsync(1);
       expect((await result).size).toBe(0);
-      expect(warn).toHaveBeenCalledWith(expect.stringContaining("rerank"), expect.stringContaining("timed out after 5000 ms"));
+      expect(warn).toHaveBeenCalledWith("Cross-encoder rerank timed out after 5000 ms");
     });
 
     it("honours RETRIEVAL_CROSS_ENCODER_TIMEOUT_MS", async () => {
-      jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
       const chat = jest.fn(() => new Promise<string>(() => undefined));
       const custom = { get: jest.fn((k: string) => (k === "RETRIEVAL_CROSS_ENCODER_TIMEOUT_MS" ? "1200" : undefined)) } as unknown as ConfigService;
       const reranker = new CrossEncoderReranker({ chat } as unknown as OllamaService, custom);

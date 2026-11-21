@@ -32,14 +32,10 @@ export class UserReferenceService {
       const question = query.question;
       const hints = options.skipCrossEncoder ? { ...query.hints, skipCrossEncoder: true } : query.hints;
       const topK = Number(this.config.get("TOP_K")) || RAG_PROMPT_TOP_K_DEFAULT;
-      this.logger.debug(
-        `[RAG] Query purpose=${input.purpose} hints=${JSON.stringify(hints)} query="${question}"`,
-      );
       const contexts = await this.retrieval.retrieve(question, topK, hints);
       const filtered = contexts.filter((c) => c.score >= RAG_CONFIDENCE_THRESHOLD);
       this.logger.log(
-        `[RAG] RetrievalService.retrieve purpose=${input.purpose} intent=${hints.intent ?? "general"} ` +
-          `hasConditionContext=${hints.hasConditionContext ?? false} ` +
+        `[RAG] RetrievalService.retrieve purpose=${input.purpose} ` +
           `rawHits=${contexts.length} usedAfterScore>=${RAG_CONFIDENCE_THRESHOLD}=${filtered.length} ` +
           `topScore=${contexts[0]?.score != null ? contexts[0].score.toFixed(3) : "n/a"}`,
       );
@@ -49,8 +45,8 @@ export class UserReferenceService {
         );
       }
       return buildRagReferenceBlock(filtered, RAG_REFERENCE_MAX_CHARS);
-    } catch (err) {
-      this.logger.warn(`[RAG] Retrieval failed, continuing without references: ${(err as Error)?.message ?? err}`);
+    } catch {
+      this.logger.warn("Retrieval failed. Continuing without references.");
       return { text: "None.", used: [] };
     }
   }

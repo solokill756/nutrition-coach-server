@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { PostgresRagService } from "./postgres-rag.service";
 import { VectorService } from "./vector.service";
@@ -38,6 +38,7 @@ type RagIndex = {
 
 @Injectable()
 export class RetrievalService implements OnModuleInit {
+  private readonly logger = new Logger(RetrievalService.name);
   private isIndexReady = false;
   private isVectorReady = false;
   private hybridMode: HybridSearchMode = "hybrid";
@@ -69,23 +70,23 @@ export class RetrievalService implements OnModuleInit {
       else this.hybridMode = "hybrid";
 
       this.index = this.buildIndex(await this.loadDomainData());
-      console.log(`[RETRIEVAL] 📂 Indexed domains: ${this.getIndexedDomains().join(", ") || "(none)"}`);
+      this.logger.log(`Indexed domains: ${this.getIndexedDomains().join(", ") || "(none)"}`);
       this.isIndexReady = true;
 
       // No boot embedding sync for RAG: the ingest pipeline (and admin edits) own rag_embeddings.
       this.isVectorReady = this.vectorService.isServiceReady();
 
       if (!this.isVectorReady && this.hybridMode !== "bm25-only") {
-        console.warn("[RETRIEVAL]  Vector not ready; using BM25-only for retrieval until embeddings are available.");
+        this.logger.warn("Vector not ready; using BM25-only for retrieval until embeddings are available.");
         this.hybridMode = "bm25-only";
       }
 
       const t1 = performance.now();
-      console.log(`[RETRIEVAL]  Initialized in ${(t1 - t0).toFixed(0)}ms`);
-      console.log(`[RETRIEVAL]  Stats: ${this.index.docs.length} docs`);
-      console.log(`[RETRIEVAL]  Hybrid Mode: ${this.hybridMode.toUpperCase()}`);
+      this.logger.log(`Initialized in ${(t1 - t0).toFixed(0)}ms`);
+      this.logger.log(`Stats: ${this.index.docs.length} docs`);
+      this.logger.log(`Hybrid Mode: ${this.hybridMode.toUpperCase()}`);
     } catch (error) {
-      console.error("[RETRIEVAL]  Initialization failed:", error);
+      this.logger.error("Initialization failed:", error);
       this.isIndexReady = false;
       this.isVectorReady = false;
       this.hybridMode = "bm25-only";
@@ -105,7 +106,7 @@ export class RetrievalService implements OnModuleInit {
       docIdToDomain.set(doc.id, dom);
     }
     if (docs.length === 0) {
-      console.warn("[RETRIEVAL]  No documents to index");
+      this.logger.warn("No documents to index");
     } else {
       bm25Searcher.build(docs);
     }
@@ -141,7 +142,7 @@ export class RetrievalService implements OnModuleInit {
       if (!this.isIndexReady || index.docs.length === 0) return [];
 
       const subQueries = await this.expandQuery(question, hints);
-      console.log(`[RETRIEVAL]  Expanded query into ${subQueries.length} terms: ${subQueries.join(", ")}`);
+      this.logger.debug(`Searching with ${subQueries.length} query variants`);
 
       const embedQuery = this.createQueryEmbedder();
       const allResults = new Map<string, number>();
@@ -179,8 +180,8 @@ export class RetrievalService implements OnModuleInit {
       let queryEmbedding: number[] | null = null;
       try {
         queryEmbedding = await embedQuery(question);
-      } catch (error) {
-        console.warn(`[RETRIEVAL]  Query embedding unavailable; re-ranking without semantic scores: ${(error as Error)?.message ?? error}`);
+      } catch {
+        this.logger.warn("Query embedding unavailable. Re-ranking without semantic scores.");
       }
       const pgSemantic = new Map<string, number>();
       if (queryEmbedding && this.vectorService.docEmbeddingsInPostgres() && candidateDocIds.length > 0) {
@@ -236,11 +237,11 @@ export class RetrievalService implements OnModuleInit {
       const results = diversifiedDocs.map(({ doc, score }) => this.formatRetrievalResult(doc, score));
 
       const t1 = performance.now();
-      console.log(`[RETRIEVAL]  Smart Search done in ${(t1 - t0).toFixed(1)}ms`);
+      this.logger.log(`Smart Search done in ${(t1 - t0).toFixed(1)}ms`);
       return results;
 
-    } catch (error) {
-      console.error("[RETRIEVAL]  Smart Retrieve error:", error);
+    } catch {
+      this.logger.error("Smart Retrieve error");
       return [];
     }
   }
@@ -298,7 +299,7 @@ export class RetrievalService implements OnModuleInit {
           content: "You are a search-query paraphraser. Return ONLY a JSON array of strings. No extra text. No generic meal-plan drift.",
         },
         { role: "user", content: prompt },
-      ]);
+      ], { sensitive: true });
 
       const match = response.match(/\[.*\]/s);
       if (match) {
@@ -316,8 +317,8 @@ export class RetrievalService implements OnModuleInit {
           return result;
         }
       }
-    } catch (e) {
-      console.warn("[RETRIEVAL]  Query expansion failed, using original query:", (e as Error).message);
+    } catch {
+      this.logger.warn("Query expansion failed. Using original query.");
     }
     return [question];
   }
@@ -404,8 +405,8 @@ export class RetrievalService implements OnModuleInit {
             : null;
         })
         .filter((r) => r !== null) as RetrievalResult[];
-    } catch (error) {
-      console.warn("[RETRIEVAL] Hybrid vector stage failed; BM25-only fallback:", error);
+    } catch {
+      this.logger.warn("Hybrid vector stage failed. BM25-only fallback");
       return this.bm25RankedToResults(index, bm25Results, topK);
     }
   }
@@ -452,8 +453,8 @@ export class RetrievalService implements OnModuleInit {
           ? { id: doc.id, source: doc.source, title: doc.title, content: doc.content, domain: String(doc.metadata?.domain || ""), score: r.score }
           : null;
       }).filter((r) => r !== null) as RetrievalResult[];
-    } catch (error) {
-      console.warn("[RETRIEVAL]  vector-only search failed; BM25 fallback:", error);
+    } catch {
+      this.logger.warn("vector-only search failed. BM25 fallback");
       return this.bm25RankedToResults(index, index.bm25Searcher.search(query, hints), topK);
     }
   }
@@ -530,9 +531,9 @@ export class RetrievalService implements OnModuleInit {
   setHybridMode(mode: HybridSearchMode): void {
     if (["bm25-only", "vector-only", "hybrid"].includes(mode)) {
       this.hybridMode = mode;
-      console.log(`[RETRIEVAL]  Hybrid mode set to: ${mode}`);
+      this.logger.log(`Hybrid mode set to: ${mode}`);
     } else {
-      console.warn(`[RETRIEVAL]  Invalid hybrid mode: ${mode}`);
+      this.logger.warn(`Invalid hybrid mode: ${mode}`);
     }
   }
 
@@ -579,14 +580,14 @@ export class RetrievalService implements OnModuleInit {
   }
 
   private async rebuildOnce(): Promise<void> {
-    console.log("[RETRIEVAL]  Rebuilding index...");
+    this.logger.log("Rebuilding index...");
     try {
       const next = this.buildIndex(await this.loadDomainData());
       this.index = next;
       this.isIndexReady = true;
-      console.log(`[RETRIEVAL]  Index rebuilt (${next.docs.length} docs)`);
+      this.logger.log(`Index rebuilt (${next.docs.length} docs)`);
     } catch (error) {
-      console.error("[RETRIEVAL]  Index rebuild failed; keeping previous index:", error);
+      this.logger.error("Index rebuild failed; keeping previous index:", error);
     }
   }
 
@@ -603,14 +604,14 @@ export class RetrievalService implements OnModuleInit {
     await this.postgresRagService.ensureSchema();
     const corpus = await this.postgresRagService.loadCorpus();
     if (corpus.docs.length === 0) {
-      console.warn("[DATA]  RAG store is empty; retrieval returns nothing until knowledge is ingested.");
+      this.logger.warn("RAG store is empty; retrieval returns nothing until knowledge is ingested.");
     }
 
     const docs = excludeFoodDomainDocs(corpus.docs)
       .filter((doc) => doc?.id && doc?.content)
       .map(normalizeDocDomain);
-    console.log("[DATA]  Loaded corpus from PostgreSQL (DB-only)");
-    console.log(`[DATA]  Loaded: ${docs.length} docs`);
+    this.logger.log("Loaded corpus from PostgreSQL (DB-only)");
+    this.logger.log(`Loaded: ${docs.length} docs`);
     return docs;
   }
 }

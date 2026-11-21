@@ -6,10 +6,8 @@
  * container's /openapi.json and verified against real conversions.
  *
  * The ASYNC API is used (the sync endpoints give up after ~120 s with a 504):
- *   1. submit  POST /v1/convert/source/async  application/json
- *                { sources: [{ kind: "http", url }], options: {...} }
- *              POST /v1/convert/file/async    multipart/form-data
- *                field `files` (the PDF) + one form field per option below
+ *   1. submit  POST /v1/convert/file/async    multipart/form-data
+ *                field `files` (PDF or HTML) + one form field per option below
  *              -> TaskStatusResponse { task_id, task_status, ... }
  *   2. poll    GET /v1/status/poll/{task_id}  every 3 s until task_status is
  *              success | partial_success (-> step 3) or failure | skipped
@@ -22,7 +20,7 @@
  *
  * Result body (HTTP 200 even when the conversion failed; check `status` / `errors[]`):
  *
- * Options used on both endpoints:
+ * Options used on file submission:
  *   - to_formats: ["json"]  (multipart: to_formats=json) -> DoclingDocument is
  *     returned in `document.json_content`
  *   - image_export_mode: "embedded"  -> picture `image.uri` is a base64 data URI
@@ -38,8 +36,6 @@
  * Response: { status: "success" | "partial_success" | "failure",
  *   document: { filename, json_content }, errors: [{ error_message, category,
  *   ... }], processing_time }. Failure examples seen live:
- *   unreachable host -> category "source_unavailable", "URL is not allowed: ..."
- *   remote 404       -> category "policy", "404 Client Error: Not Found for url: ..."
  *   corrupt file     -> category "backend_failure"
  *
  * DoclingDocument shape facts the mapper relies on (real responses, not docs):
@@ -55,6 +51,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
+import { downloadSource } from './source-download';
 import { normalizeText } from './text-normalize';
 import { repairTableHeaders } from './table-continuation';
 import type { ExtractedBlock, ExtractedDocument } from './rag-ingest.types';
@@ -284,9 +281,6 @@ export function titleFromPdfUrl(url: string): string | null {
   return title === '' ? null : title;
 }
 
-const FETCH_MESSAGE =
-  /\b[45]\d\d (Client|Server) Error\b|URL is not allowed|Max retries exceeded|Name or service not known|Failed to resolve|Connection (refused|aborted|reset)|timed out/i;
-
 @Injectable()
 export class DoclingClient {
   private readonly baseUrl: string;
@@ -301,16 +295,10 @@ export class DoclingClient {
   }
 
   async convertUrl(url: string): Promise<ExtractedDocument> {
-    const data = await this.runTask('/v1/convert/source/async', {
-      sources: [{ kind: 'http', url }],
-      options: {
-        to_formats: ['json'],
-        image_export_mode: 'embedded',
-        include_images: true,
-        do_ocr: false,
-      },
-    }, true);
-    const json = this.jsonContent(data, true);
+    const source = await downloadSource(url).catch((error: Error) => {
+      throw new DoclingError('FETCH_FAILED', error.message);
+    });
+    const json = await this.convertFile(source.bytes, source.filename, source.contentType);
     // Docling labels no title item in most PDFs; the PDF's file name reads better than its URL.
     const isPdf = isObj(json) && isObj(json.origin) && json.origin.mimetype === 'application/pdf';
     return mapDoclingDocument(json, (isPdf ? titleFromPdfUrl(url) : null) ?? url);
@@ -327,25 +315,35 @@ export class DoclingClient {
     filename: string,
     opts: { maxPages?: number } = {},
   ): Promise<ExtractedDocument> {
+    const json = await this.convertFile(buffer, filename, 'application/pdf', opts.maxPages);
+    // Fallback title matches the upload placeholder title, so it does not change to "<name>.pdf" after ingest.
+    return mapDoclingDocument(json, filename.replace(/\.pdf$/i, ''));
+  }
+
+  private async convertFile(
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    maxPages?: number,
+  ): Promise<unknown> {
     const form = new FormData();
-    form.append('files', new Blob([new Uint8Array(buffer)], { type: 'application/pdf' }), filename);
+    form.append('files', new Blob([new Uint8Array(buffer)], { type: contentType }), filename);
+    form.append('from_formats', contentType === 'application/pdf' ? 'pdf' : 'html');
     form.append('to_formats', 'json');
     form.append('image_export_mode', 'embedded');
     form.append('include_images', 'true');
     form.append('do_ocr', 'false');
-    if (opts.maxPages !== undefined && opts.maxPages > 0) {
+    if (maxPages !== undefined && maxPages > 0) {
       form.append('page_range', '1');
-      form.append('page_range', String(opts.maxPages + 1));
+      form.append('page_range', String(maxPages + 1));
     }
-    const data = await this.runTask('/v1/convert/file/async', form, false);
-    // Fallback title matches the upload placeholder title, so it does not change to "<name>.pdf" after ingest.
-    return mapDoclingDocument(this.jsonContent(data, false), filename.replace(/\.pdf$/i, ''));
+    return this.jsonContent(await this.runTask(form));
   }
 
   /** Submit an async job, poll until it finishes, return the result body. */
-  private async runTask(submitPath: string, body: unknown, isUrlSource: boolean): Promise<unknown> {
+  private async runTask(form: FormData): Promise<unknown> {
     const startedAt = Date.now();
-    const submitted = await this.request('post', submitPath, body);
+    const submitted = await this.request('post', '/v1/convert/file/async', form);
     const taskId = isObj(submitted) ? submitted.task_id : undefined;
     if (typeof taskId !== 'string' || taskId === '') {
       throw new DoclingError('CONVERT_FAILED', 'docling-serve did not return a task id');
@@ -361,10 +359,7 @@ export class DoclingClient {
           (isObj(status) && (status.error_message ?? status.failure?.message)) ||
             `docling-serve task ${s}`,
         );
-        throw new DoclingError(
-          isUrlSource && FETCH_MESSAGE.test(message) ? 'FETCH_FAILED' : 'CONVERT_FAILED',
-          message,
-        );
+        throw new DoclingError('CONVERT_FAILED', message);
       }
       if (Date.now() - startedAt + POLL_INTERVAL_MS >= this.deadlineMs) {
         throw new DoclingError(
@@ -402,7 +397,7 @@ export class DoclingClient {
     }
   }
 
-  private jsonContent(data: unknown, isUrlSource: boolean): unknown {
+  private jsonContent(data: unknown): unknown {
     const body: Json = isObj(data) ? data : {};
     const json = isObj(body.document) ? body.document.json_content : undefined;
     const errors: Json[] = Array.isArray(body.errors) ? body.errors.filter(isObj) : [];
@@ -411,17 +406,7 @@ export class DoclingClient {
         .map((e) => String(e.error_message ?? ''))
         .filter(Boolean)
         .join('; ');
-      const fetchFailed =
-        isUrlSource &&
-        errors.some(
-          (e) =>
-            e.category === 'source_unavailable' ||
-            FETCH_MESSAGE.test(String(e.error_message ?? '')),
-        );
-      throw new DoclingError(
-        fetchFailed ? 'FETCH_FAILED' : 'CONVERT_FAILED',
-        message || 'docling-serve returned no document',
-      );
+      throw new DoclingError('CONVERT_FAILED', message || 'docling-serve returned no document');
     }
     return json;
   }

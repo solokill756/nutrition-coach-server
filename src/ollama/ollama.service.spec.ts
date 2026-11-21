@@ -288,3 +288,30 @@ describe("OllamaService platform provider", () => {
     );
   });
 });
+
+describe("OllamaService sensitive RAG prompts", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it.each(["platform", "gemini"])("keeps %s error details out of logs", async (provider) => {
+    const privateText = "private-health-marker";
+    const service = new OllamaService(config({
+      LLM_PROVIDER: provider,
+      AI_API_URL: "https://platform.example",
+      AI_SECRET_KEY: "test-secret",
+      GEMINI_API_KEY: "test-key",
+    }));
+    const log = jest.spyOn(console, "error").mockImplementation(() => undefined);
+    mockedAxios.post.mockReset().mockRejectedValue(Object.assign(new Error(privateText), {
+      response: {
+        status: 400,
+        data: { error: { message: `Invalid JSON payload received. Root element must be a message. ${privateText}` } },
+      },
+    }));
+
+    await expect(service.chat([{ role: "user", content: privateText }], { sensitive: true }))
+      .rejects.toThrow(provider === "platform" ? "Platform LLM request failed" : "Gemini request failed");
+    expect(JSON.stringify(log.mock.calls)).not.toContain(privateText);
+    expect(JSON.stringify(log.mock.calls)).toContain("400");
+    if (provider === "platform") expect(mockedAxios.post).toHaveBeenCalledTimes(2);
+  });
+});

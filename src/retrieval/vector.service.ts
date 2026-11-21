@@ -1,4 +1,4 @@
-import { Injectable, OnModuleInit } from "@nestjs/common";
+import { Injectable, Logger, OnModuleInit } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import * as fs from "fs";
 import * as path from "path";
@@ -38,6 +38,7 @@ function parseKeepAlive(raw: string | undefined): number | string {
 
 @Injectable()
 export class VectorService implements OnModuleInit {
+  private readonly logger = new Logger(VectorService.name);
   // Configuration
   private model = "bge-m3"; // RAG embedding model (RAG_EMBEDDING_MODEL)
   private embeddingDim = 1024; // RAG_EMBEDDING_DIM
@@ -79,16 +80,16 @@ export class VectorService implements OnModuleInit {
       if (this.usePgvector && this.postgresRagService.isEnabled()) {
         await this.postgresRagService.ensureSchema();
         this.isReady = true;
-        console.log("[VECTOR] ✅ Service initialized with pgvector storage");
+        this.logger.log("Service initialized with pgvector storage");
       } else {
         await this.loadCacheFromDisk();
         this.isReady = true;
-        console.log(
-          `[VECTOR] ✅ Service initialized with ${this.docEmbeddings.size} cached embeddings`
+        this.logger.log(
+          `Service initialized with ${this.docEmbeddings.size} cached embeddings`
         );
       }
     } catch (error) {
-      console.warn(`[VECTOR] ⚠️ Cache load failed: ${error}`);
+      this.logger.warn(`Cache load failed: ${error}`);
       this.isReady = false;
     }
     // Not awaited: startup must not wait for (or fail on) Ollama.
@@ -100,7 +101,7 @@ export class VectorService implements OnModuleInit {
     try {
       await this.requestEmbedBatch(["warm-up"]);
     } catch (error) {
-      console.warn(`[VECTOR] ⚠️ RAG embedding model warm-up failed: ${error}`);
+      this.logger.warn(`RAG embedding model warm-up failed: ${error}`);
     }
   }
 
@@ -128,7 +129,7 @@ export class VectorService implements OnModuleInit {
 
       return embedding;
     } catch (error) {
-      console.error("[VECTOR] ❌ Embedding generation failed:", error);
+      this.logger.error("Embedding generation failed:", error);
       throw error;
     }
   }
@@ -168,7 +169,7 @@ export class VectorService implements OnModuleInit {
 
       return embedding;
     } catch (error) {
-      console.error("[VECTOR] ❌ Query embedding failed:", error);
+      this.logger.error("Query embedding failed");
       throw error;
     }
   }
@@ -295,7 +296,7 @@ export class VectorService implements OnModuleInit {
     const cacheFilePath = path.join(this.cacheDir, this.cacheFile);
     if (fs.existsSync(cacheFilePath)) {
       fs.unlinkSync(cacheFilePath);
-      console.log("[VECTOR] 🗑️ Embeddings cleared");
+      this.logger.log("Embeddings cleared");
     }
   }
 
@@ -346,7 +347,7 @@ export class VectorService implements OnModuleInit {
       }
       return data.embeddings;
     } catch (error) {
-      console.error("[VECTOR] ❌ Ollama embedding error:", error);
+      this.logger.error("Ollama embedding request failed");
       throw new Error(`Failed to generate embedding: ${error}`);
     }
   }
@@ -381,7 +382,7 @@ export class VectorService implements OnModuleInit {
 
       return data.embedding;
     } catch (error) {
-      console.error("[VECTOR] ❌ Ollama embedding error:", error);
+      this.logger.error("Ollama embedding request failed");
       throw new Error(`Failed to generate embedding: ${error}`);
     }
   }
@@ -428,11 +429,11 @@ export class VectorService implements OnModuleInit {
       // Load embeddings
       this.docEmbeddings = new Map(Object.entries(cache.embeddings));
 
-      console.log(
-        `[VECTOR] 📂 Loaded ${this.docEmbeddings.size} embeddings from cache`
+      this.logger.log(
+        `Loaded ${this.docEmbeddings.size} embeddings from cache`
       );
     } catch (error) {
-      console.error("[VECTOR] ❌ Cache load error:", error);
+      this.logger.error("Cache load error:", error);
       throw error;
     }
   }

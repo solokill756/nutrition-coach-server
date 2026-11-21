@@ -60,6 +60,26 @@ describe("UserReferenceService", () => {
     expect(retrieve.mock.calls[1][2].skipCrossEncoder).toBe(true);
   });
 
+  it("does not log profile details on success or failure", async () => {
+    const privateText = "private-health-marker";
+    const retrieve = jest.fn().mockResolvedValueOnce([]).mockRejectedValueOnce(new Error(privateText));
+    const debug = jest.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+    const log = jest.spyOn(Logger.prototype, "log").mockImplementation(() => undefined);
+    const warn = jest.spyOn(Logger.prototype, "warn").mockImplementation(() => undefined);
+    const personalInput = { ...input, profile: { ...input.profile, allergies: [privateText] } };
+    try {
+      const service = build(undefined, retrieve);
+      await service.retrieve(personalInput);
+      await service.retrieve(personalInput);
+      expect(retrieve.mock.calls[0][0]).toContain(privateText);
+      expect(JSON.stringify([...debug.mock.calls, ...log.mock.calls, ...warn.mock.calls])).not.toContain(privateText);
+    } finally {
+      debug.mockRestore();
+      log.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("returns None when retrieval fails", async () => {
     const retrieve = jest.fn().mockRejectedValue(new Error("boom"));
     const out = await build(undefined, retrieve).retrieve(input);

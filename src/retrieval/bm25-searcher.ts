@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { DomainDoc, RetrievalHints, RankedResult } from "./retrieval.types";
 import { tokenize, normalizeForMatching, getDomainBoost, getAllowedDomains, excludeFoodDomainDocs } from "./retrieval.utils";
 import { ConfigService } from "@nestjs/config";
@@ -13,6 +14,7 @@ const FALLBACK_BM25_LIMIT = 300;
 const DOMAIN_FILTER_MIN_CANDIDATES = 5;
 
 export class Bm25Searcher {
+  private readonly logger = new Logger(Bm25Searcher.name);
   private readonly invertedIndex = new Map<string, Set<string>>();
   private readonly idfCache = new Map<string, number>();
   private readonly docTokensCache = new Map<string, string[]>();
@@ -49,7 +51,7 @@ export class Bm25Searcher {
         });
       }
     });
-    console.log(`[LUNR]  Built index with ${this.docs.length} documents`);
+    this.logger.log(`Built Lunr index with ${this.docs.length} documents`);
   }
 
   private buildBM25Structures() {
@@ -83,7 +85,7 @@ export class Bm25Searcher {
       this.idfCache.set(token, idf);
     }
 
-    console.log(`[BM25]  Built structures: ${this.invertedIndex.size} tokens, avg length: ${this.avgDocLength.toFixed(1)}`);
+    this.logger.log(`Built BM25 structures: ${this.invertedIndex.size} tokens, avg length: ${this.avgDocLength.toFixed(1)}`);
   }
 
   search(query: string, hints: RetrievalHints): RankedResult[] {

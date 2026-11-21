@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { VectorService } from "./vector.service";
 
 function createConfig(pg = false, extra: Record<string, string> = {}) {
@@ -82,7 +83,7 @@ describe("VectorService", () => {
   it("a failed warm-up does not break startup", async () => {
     fetchMock.mockRejectedValue(new Error("connect ECONNREFUSED"));
     const errorSpy = jest.spyOn(console, "error").mockImplementation(() => {});
-    const warnSpy = jest.spyOn(console, "warn").mockImplementation(() => {});
+    const warnSpy = jest.spyOn(Logger.prototype, "warn").mockImplementation(() => {});
     const service = new VectorService(createConfig(true), createPostgres(true));
     await expect(service.onModuleInit()).resolves.toBeUndefined();
     await new Promise((r) => setImmediate(r));

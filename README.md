@@ -118,6 +118,11 @@ stores it in `rag_chunks` / `rag_embeddings`. Retrieval picks up every change wi
    Keep both at or below `DOCLING_TIMEOUT_MS / 1000` (default 3600). docling-serve does not cancel a conversion the
    API server gave up on, so with one worker a higher server cap lets an abandoned conversion block the next job.
 
+   The API downloads public HTTP(S) PDF and HTML sources before uploading their bytes to Docling. Downloads are
+   limited to 50 MiB, 60 seconds and five redirects. The API checks the destination addresses on every request.
+   Compose publishes Docling on loopback. For an independently deployed Docling, restrict access to the API server
+   and keep `DOCLING_SERVE_ENABLE_REMOTE_SERVICES=false`.
+
 3. If the database still has the old `rag_embeddings` table with `vector(768)`, the server logs
    `rag_embeddings.embedding has dimension 768 but RAG_EMBEDDING_DIM=1024` at startup. Drop the table and restart
    the server, which recreates it as `vector(1024)`. The old embeddings are not needed, because the old corpus was
@@ -216,7 +221,7 @@ curl -s -X POST localhost:3001/admin/auth/login -H 'Content-Type: application/js
    ```
    curl -s -X PATCH localhost:3001/admin/rag/chunks/<chunkId> -H "Authorization: Bearer $TOKEN" \
      -H 'Content-Type: application/json' -d '{"content":"..."}'
-   curl -s "localhost:3001/rag/evaluate?q=<word>&mode=bm25-only"
+   curl -s "localhost:3001/rag/evaluate?q=<word>&mode=bm25-only" -H "Authorization: Bearer $TOKEN"
    ```
 
    Re-ingest the document (`POST /admin/rag/documents/<id>/reingest`): the edited chunk keeps its content.

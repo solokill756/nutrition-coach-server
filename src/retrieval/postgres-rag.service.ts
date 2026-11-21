@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from "@nestjs/common";
+import { Injectable, Logger, OnModuleDestroy } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { resolveRagEmbeddingModel } from "./rag-embedding-model";
 
@@ -20,6 +20,7 @@ type CorpusPayload = {
 
 @Injectable()
 export class PostgresRagService implements OnModuleDestroy {
+  private readonly logger = new Logger(PostgresRagService.name);
   private readonly enabled: boolean;
   private readonly pool: any | null;
   private readonly dbSchema: string;
@@ -194,8 +195,8 @@ export class PostgresRagService implements OnModuleDestroy {
 
     const dim = await this.checkEmbeddingDimension();
     if (!dim.ok) {
-      console.error(
-        `[POSTGRES] rag_embeddings.embedding has dimension ${dim.actual ?? "unknown"} but RAG_EMBEDDING_DIM=${dim.expected}. ` +
+      this.logger.error(
+        `rag_embeddings.embedding has dimension ${dim.actual ?? "unknown"} but RAG_EMBEDDING_DIM=${dim.expected}. ` +
           `Run scripts/sql/rag-reset-embeddings-1024.sql (drops rag_embeddings) and restart so it is recreated with vector(${dim.expected}).`
       );
     }

@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { downloadSource } from './source-download';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
@@ -9,6 +10,7 @@ import {
 import type { ExtractedBlock } from './rag-ingest.types';
 
 jest.mock('axios');
+jest.mock('./source-download');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
 function fixture(name: string): any {
@@ -380,6 +382,11 @@ describe('DoclingClient (async API)', () => {
   beforeEach(() => {
     jest.resetAllMocks();
     jest.useFakeTimers();
+    jest.mocked(downloadSource).mockResolvedValue({
+      bytes: Buffer.from('<html>Healthy diet</html>'),
+      filename: 'healthy-diet.html',
+      contentType: 'text/html',
+    });
   });
   afterEach(() => jest.useRealTimers());
 
@@ -392,15 +399,11 @@ describe('DoclingClient (async API)', () => {
     expect(doc.title).toBe('Healthy diet');
 
     const [url, body] = mockedAxios.post.mock.calls[0] as any[];
-    expect(url).toBe('http://localhost:5001/v1/convert/source/async');
-    expect(body.sources).toEqual([
-      { kind: 'http', url: 'https://www.who.int/news-room/fact-sheets/detail/healthy-diet' },
-    ]);
-    expect(body.options).toMatchObject({
-      to_formats: ['json'],
-      image_export_mode: 'embedded',
-      do_ocr: false,
-    });
+    expect(url).toBe('http://localhost:5001/v1/convert/file/async');
+    expect(body.get('files').name).toBe('healthy-diet.html');
+    expect(body.get('to_formats')).toBe('json');
+    expect(body.get('image_export_mode')).toBe('embedded');
+    expect(body.get('do_ocr')).toBe('false');
     const gets = mockedAxios.get.mock.calls.map((c) => c[0]);
     expect(gets).toEqual([
       'http://localhost:5001/v1/status/poll/t1',
@@ -506,7 +509,7 @@ describe('DoclingClient (async API)', () => {
     mockedAxios.post.mockResolvedValue(taskStatus('pending'));
     mockGets([taskStatus('success')], htmlResponse);
     await settle(c.convertUrl('https://example.org'));
-    expect(mockedAxios.post.mock.calls[0][0]).toBe('http://docling:5001/v1/convert/source/async');
+    expect(mockedAxios.post.mock.calls[0][0]).toBe('http://docling:5001/v1/convert/file/async');
   });
 
   it('submit -> failure maps to CONVERT_FAILED', async () => {
@@ -518,16 +521,13 @@ describe('DoclingClient (async API)', () => {
     });
   });
 
-  it('task failure for a URL whose download failed maps to FETCH_FAILED', async () => {
-    mockedAxios.post.mockResolvedValue(taskStatus('pending'));
-    mockGets([
-      taskStatus('failure', {
-        error_message: '404 Client Error: Not Found for url: https://www.who.int/nope',
-      }),
-    ]);
+  it('maps a source download failure to FETCH_FAILED before contacting Docling', async () => {
+    jest.mocked(downloadSource).mockRejectedValue(new Error('Document source returned HTTP 404'));
     await expect(settle(client.convertUrl('https://www.who.int/nope'))).rejects.toMatchObject({
       code: 'FETCH_FAILED',
+      message: 'Document source returned HTTP 404',
     });
+    expect(mockedAxios.post).not.toHaveBeenCalled();
   });
 
   it('a successful task whose result reports a failed conversion maps correctly', async () => {
@@ -544,7 +544,7 @@ describe('DoclingClient (async API)', () => {
 
     mockGets([taskStatus('success')], failure('URL is not allowed: https://x.invalid/a', 'source_unavailable').body);
     await expect(settle(client.convertUrl('https://x.invalid/a'))).rejects.toMatchObject({
-      code: 'FETCH_FAILED',
+      code: 'CONVERT_FAILED',
     });
 
     mockGets([taskStatus('success')], failure('docling-parse could not load document', 'backend_failure').body);

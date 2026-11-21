@@ -26,6 +26,7 @@ import { AdminFoodsService } from "./foods/admin-foods.service";
 import { AdminRagDocumentsController } from "./rag-documents/admin-rag-documents.controller";
 import { AdminRagDocumentsService } from "./rag-documents/admin-rag-documents.service";
 import { RagIngestModule } from "../rag-ingest/rag-ingest.module";
+import { RagEvaluateController } from "../retrieval/rag-evaluate.controller";
 import { RetrievalModule } from "../retrieval/retrieval.module";
 import { AdminRecipesController } from "./recipes/admin-recipes.controller";
 import { AdminRecipesService } from "./recipes/admin-recipes.service";
@@ -63,6 +64,7 @@ import { UserNotificationsModule } from "../user-notifications/user-notification
     AdminUsersController,
     AdminConditionRulesController,
     AdminRagDocumentsController,
+    RagEvaluateController,
   ],
   providers: [
     AdminAuthService,

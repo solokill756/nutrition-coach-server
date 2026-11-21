@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { ConfigService } from "@nestjs/config";
 import { RetrievalService } from "./retrieval.service";
 import type { RetrievalHints } from "./retrieval.types";
@@ -455,5 +456,18 @@ describe("RetrievalService result format", () => {
     expect(result.content).toBe(content);
     expect(result.page).toBe(12);
     expect(result.blockKind).toBe("table");
+  });
+});
+
+describe("RetrievalService query logging", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("does not log the contents of expanded queries", async () => {
+    const consoleLog = jest.spyOn(console, "log").mockImplementation(() => undefined);
+    const debug = jest.spyOn(Logger.prototype, "debug").mockImplementation(() => undefined);
+    const service = createService();
+    jest.spyOn(service as any, "expandQuery").mockResolvedValue(["cholesterol", "private-health-marker"]);
+    await service.retrieve("cholesterol", 1, { skipCrossEncoder: true }, "bm25-only");
+    expect(JSON.stringify([...consoleLog.mock.calls, ...debug.mock.calls])).not.toContain("private-health-marker");
   });
 });

@@ -84,15 +84,15 @@ export class OllamaService implements OnModuleInit {
     }
   }
 
-  async chat(messages: Message[]): Promise<string> {
+  async chat(messages: Message[], { sensitive = false }: { sensitive?: boolean } = {}): Promise<string> {
     const provider = this.resolveLlmProvider();
     console.log(`[LLM] Provider selected: ${provider}`);
 
     if (provider === "platform") {
-      return this.chatViaPlatform(messages);
+      return this.chatViaPlatform(messages, sensitive);
     }
 
-    return this.chatViaGemini(messages);
+    return this.chatViaGemini(messages, sensitive);
   }
 
   private resolveLlmProvider(): LlmProvider {
@@ -120,7 +120,7 @@ export class OllamaService implements OnModuleInit {
     return raw != null && raw.trim().length > 0 && raw.toLowerCase() === "true";
   }
 
-  private async chatViaPlatform(messages: Message[]): Promise<string> {
+  private async chatViaPlatform(messages: Message[], sensitive: boolean): Promise<string> {
     const aiApiUrl = this.requiredConfig("AI_API_URL");
     const secretKey = this.requiredConfig("AI_SECRET_KEY");
     const appName = this.config.get<string>("AI_APP_NAME") || "calorie";
@@ -155,11 +155,11 @@ export class OllamaService implements OnModuleInit {
       const totalElapsed = Date.now() - totalStart;
       const err = error as HttpErrorLike;
       console.error(`[PLATFORM_LLM] ERROR after ${totalElapsed}ms`);
-      console.error(`[PLATFORM_LLM]    Message: ${err.message}`);
+      if (!sensitive) console.error(`[PLATFORM_LLM]    Message: ${err.message}`);
       if (err.response?.status) {
         console.error(`[PLATFORM_LLM]    HTTP Status: ${err.response.status}`);
       }
-      const platformError = this.formatErrorData(err.response?.data);
+      const platformError = sensitive ? undefined : this.formatErrorData(err.response?.data);
       if (platformError) {
         console.error(`[PLATFORM_LLM]    API Error: ${platformError}`);
       }
@@ -175,18 +175,20 @@ export class OllamaService implements OnModuleInit {
           return this.extractGeminiText(retryResponse.data);
         } catch (retryError: unknown) {
           const retryErr = retryError as HttpErrorLike;
-          console.error(`[PLATFORM_LLM]    Retry failed: ${retryErr.message}`);
-          const retryPlatformError = this.formatErrorData(retryErr.response?.data);
+          console.error("[PLATFORM_LLM]    Retry failed");
+          if (!sensitive) console.error(`[PLATFORM_LLM]    Retry message: ${retryErr.message}`);
+          const retryPlatformError = sensitive ? undefined : this.formatErrorData(retryErr.response?.data);
           if (retryPlatformError) {
             console.error(`[PLATFORM_LLM]    Retry API Error: ${retryPlatformError}`);
           }
         }
       }
+      if (sensitive) throw new Error("Platform LLM request failed");
       throw error;
     }
   }
 
-  private async chatViaGemini(messages: Message[]): Promise<string> {
+  private async chatViaGemini(messages: Message[], sensitive: boolean): Promise<string> {
     const apiKey = this.requiredConfig(
       "GEMINI_API_KEY",
       "GEMINI_API_KEY is required when LLM_PROVIDER=gemini",
@@ -287,9 +289,9 @@ export class OllamaService implements OnModuleInit {
     } catch (error: unknown) {
       const totalElapsed = Date.now() - totalStart;
       const err = error as HttpErrorLike;
-      const geminiError = this.extractGeminiErrorMessage(err.response?.data);
+      const geminiError = sensitive ? undefined : this.extractGeminiErrorMessage(err.response?.data);
       console.error(`[GEMINI] ERROR after ${totalElapsed}ms`);
-      console.error(`[GEMINI]    Message: ${err.message}`);
+      if (!sensitive) console.error(`[GEMINI]    Message: ${err.message}`);
       if (err.response?.status) {
         console.error(`[GEMINI]    HTTP Status: ${err.response.status}`);
       }
@@ -297,6 +299,7 @@ export class OllamaService implements OnModuleInit {
         console.error(`[GEMINI]    API Error: ${geminiError}`);
       }
 
+      if (sensitive) throw new Error("Gemini request failed");
       throw new Error(this.buildProviderErrorMessage("Gemini", err, geminiError));
     }
   }

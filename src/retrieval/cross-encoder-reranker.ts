@@ -1,3 +1,4 @@
+import { Logger } from "@nestjs/common";
 import { DomainDoc } from "./retrieval.types";
 import { OllamaService } from "../ollama/ollama.service";
 import { RETRIEVAL_PROMPTS } from "./constants/retrieval-prompts";
@@ -10,6 +11,7 @@ const CROSS_ENCODER_LITE_MAX_CHARS = 500;
 const DEFAULT_CROSS_ENCODER_TIMEOUT_MS = 5000;
 
 export class CrossEncoderReranker {
+  private readonly logger = new Logger(CrossEncoderReranker.name);
   private crossEncoderLiteEnabled = true;
   private readonly timeoutMs: number;
 
@@ -48,8 +50,9 @@ export class CrossEncoderReranker {
     const prompt = RETRIEVAL_PROMPTS.CROSS_ENCODER(question, compactDocs);
 
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeoutError = new Error(`Cross-encoder rerank timed out after ${this.timeoutMs} ms`);
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error(`Cross-encoder rerank timed out after ${this.timeoutMs} ms`)), this.timeoutMs);
+      timer = setTimeout(() => reject(timeoutError), this.timeoutMs);
     });
     try {
       // The LLM call cannot be cancelled; past the timeout its answer is ignored.
@@ -57,14 +60,13 @@ export class CrossEncoderReranker {
         this.ollamaService.chat([
           { role: "system", content: "You are a strict reranker. Output valid JSON array only." },
           { role: "user", content: prompt },
-        ]),
+        ], { sensitive: true }),
         timeout,
       ]);
       const parsed = this.parseResponse(raw);
       return new Map<string, number>(parsed.map((item) => [item.id, item.score]));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.warn("[RETRIEVAL] ⚠️ Cross-encoder lite rerank failed:", message);
+      this.logger.warn(error === timeoutError ? timeoutError.message : "Cross-encoder lite rerank failed");
       return new Map<string, number>();
     } finally {
       clearTimeout(timer);

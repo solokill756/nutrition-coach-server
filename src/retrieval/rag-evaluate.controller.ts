@@ -1,8 +1,13 @@
-import { Controller, Get, Query } from "@nestjs/common";
+import { Controller, Get, Query, UseFilters, UseGuards } from "@nestjs/common";
+import { AdminAuthExceptionFilter } from "../admin/auth/admin-auth-exception.filter";
+import { AdminJwtAuthGuard } from "../admin/auth/guards/admin-jwt-auth.guard";
+import { AdminRoleGuard } from "../admin/auth/guards/admin-role.guard";
 import { RetrievalService } from "./retrieval.service";
 import type { HybridSearchMode } from "./retrieval.types";
 
 @Controller("rag")
+@UseFilters(AdminAuthExceptionFilter)
+@UseGuards(AdminJwtAuthGuard, AdminRoleGuard)
 export class RagEvaluateController {
   constructor(private readonly retrievalService: RetrievalService) {}
 

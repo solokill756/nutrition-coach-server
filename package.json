@@ -16,6 +16,7 @@
     "db:food-verify-all": "node scripts/run-food-isverified-all-true.js",
     "db:import-usda-foods": "node scripts/import-usda-foods.js",
     "db:seed-admin": "node scripts/seed-admin.js",
+    "db:seed-condition-nutrient-rules": "node dist/seed-condition-nutrient-rules.js",
     "db:seed-exercises": "node scripts/seed-exercises.js",
     "db:seed-test-foods": "node scripts/seed-test-foods.js",
     "test:vn-retrieval": "ts-node scripts/test-vn-regression.ts",

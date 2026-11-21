@@ -38,6 +38,9 @@ export class ConditionNutrientUnitService {
     if (source === "mg" && canonical === "g") return { amount: this.round(amount / 1000), unit: "g" };
     if (source === "mg" && canonical === "ug") return { amount: this.round(amount * 1000), unit: "ug" };
     if (source === "ug" && canonical === "mg") return { amount: this.round(amount / 1000), unit: "mg" };
+    if (source === "g/1000kcal" && this.normalizeNutrient(nutrient) === "fiber") {
+      return { amount: this.round((targetCalories * amount) / 1000), unit: "g" };
+    }
     if ((source === "%kcal" || source === "% kcal") && canonical === "g") {
       return { amount: this.round(((targetCalories * amount) / 100) / this.kcalPerGram(nutrient)), unit: "g" };
     }
